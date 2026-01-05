@@ -1,0 +1,4622 @@
+---
+title: "Documentación BLIO: Preparación del dataset"
+author: "Atrys Health"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: true
+    toc_depth: 4
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/home/atrys/Documentos/documentacion_variables")
+```
+
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(stringr)
+library(readxl)
+library(writexl)
+library(caret)
+library(tidyr)
+library(skimr)
+library(readr)
+library(lubridate)
+library(forcats)
+
+```
+
+## Datos
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+# Importamos el dataset
+path_clinic_data <- "/home/agombau/modelo_pipeline/procesed_data/14_06_2024_14_04_25_Datos_pulmon_revisados_con_PFS_y_OS_ATRYS_TBI.xlsx"
+clinic_full_data <- read_excel(path_clinic_data)
+
+# Eliminamos la primera fila
+clinic_full_data <- clinic_full_data[-1,]
+
+# Eliminamos las 3 ultimas filas
+clinic_full_data <- clinic_full_data[-((nrow(clinic_full_data)-2):nrow(clinic_full_data)), ]
+
+# Definir los códigos de pacientes a excluir
+excluded_codes <- c("LE-024-PU", "LE-028-PU", "LE-029-PU", "LE-031-PU", "LE-032-PU", 
+                    "LE-036-PU", "FA-013-PU", "LE-023-PU", "LE-030-PU", "LE-033-PU", 
+                    "LE-034-PU", "LE-035-PU")
+# Ecluimos los pacientes
+clinic_full_data <- clinic_full_data[!clinic_full_data$Paciente %in% excluded_codes, ]
+
+# Sustituimos caracteres
+names(clinic_full_data) <- gsub(" ", ".", names(clinic_full_data))
+names(clinic_full_data) <- gsub("/", ".", names(clinic_full_data))
+
+```
+
+Eliminamos los pacientes de los cuales no tenemos datos de TCR.
+
+```{r}
+# Lista con codigo de pacientes obtenido con script en bash
+pacientes_retenidos <- readLines("/home/agombau/modelo_pipeline/procesed_data/new_names.txt")
+# Pacientes en el txt que no están en clinic_data
+no_en_data <- setdiff(pacientes_retenidos, clinic_full_data$Paciente)
+cat("Pacientes del archivo que no se encontraron en clinic_data:\n")
+print(no_en_data)
+
+# Pacientes en clinic_data que no están en el txt
+no_en_txt <- setdiff(clinic_full_data$Paciente, pacientes_retenidos)
+cat("Pacientes en clinic_data que no están en el archivo:\n")
+print(no_en_txt)
+
+```
+
+```{r}
+# Filtramos
+clinic_full_data <- clinic_full_data[ clinic_full_data$Paciente %in% pacientes_retenidos, ]
+
+```
+
+```{r}
+# Filtramos
+clinic_full_data <- clinic_full_data[ clinic_full_data$Paciente %in% pacientes_retenidos, ]
+
+```
+
+Eliminamos los pacientes con registros problemáticos: `PH-157-PU`, `PH-126-PU`, `LE-011-PU`, `LE-008-PU`, `PH-103-PU`, `LE-013-PU`.
+
+```{r}
+# Definir vector con los identificadores de pacientes a eliminar
+pacientes_eliminar <- c("PH-157-PU", "PH-126-PU", "LE-011-PU", "LE-008-PU", "PH-103-PU", "LE-013-PU")
+
+# Filtrar el dataframe eliminando las filas donde la columna "Pacientes" contenga esos valores
+clinic_full_data <- clinic_full_data[ !(clinic_full_data$Paciente %in% pacientes_eliminar), ]
+```
+
+```{r echo=FALSE}
+cat("El conjunto de datos clinic_full_data contiene:", "\n")
+cat("Filas (correspondiente a los pacientes):", nrow(clinic_full_data), "\n")
+cat("Columnas (correspondientes a los parametros):", ncol(clinic_full_data), "\n")
+```
+
+## EDA
+
+```{r}
+colnames(clinic_full_data)
+```
+
+A lo largo del documento describiremos los distintos parámetros o variables que encontramos, asi como las transformaciones que debemos aplicar en los distintos casos.
+
+### Paciente
+
+Identificación del paciente.
+
+### Fecha.de.inicio.IO
+
+Fecha de inicio del tratamiento de Imnunoterapia. Nos será util para crear una nueva variable que será resultado de la fecha de inicio de inmunoterapia menos la fecha de diagnóstico. Alternativamente se puede considerar la edad de inicio de la imnunoterapia menos la edad al diagnóstico.
+
+```{r}
+head(clinic_full_data$Fecha.de.inicio.IO)
+class(clinic_full_data$Fecha.de.inicio.IO)
+cat("Número de NAs:", sum(is.na(clinic_full_data$Fecha.de.inicio.IO)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Fecha.de.inicio.IO)) * 100, 2), "%\n")
+
+```
+
+Se propone su correcta conversión a formato de fecha
+
+```{r}
+# Convertir la columna a Date
+clinic_full_data$Fecha.de.inicio.IO <- as.Date(clinic_full_data$Fecha.de.inicio.IO, format = "%d/%m/%Y")
+
+# Definir cortes cada 30 días
+breaks_seq <- seq(min(clinic_full_data$Fecha.de.inicio.IO, na.rm = TRUE),
+                  max(clinic_full_data$Fecha.de.inicio.IO, na.rm = TRUE),
+                  by = "1 days")
+
+# Crear el histograma
+hist(clinic_full_data$Fecha.de.inicio.IO,
+     breaks = breaks_seq,
+     main = "Distribución de Fecha de inicio IO",
+     xlab = "Fecha",
+     col = "skyblue",
+     border = "black")
+
+```
+
+### PFS..d.
+
+Define el tiempo que el paciente permanece vivo, medido en días, y en que la enfermedad permanece sin empeorar (sin progresar) desde un punto inicial definido.
+
+```{r}
+head(clinic_full_data$`PFS.(d)`)
+class(clinic_full_data$`PFS.(d)`)
+cat("Número de NAs:", sum(is.na(clinic_full_data$`PFS.(d)`)), "\n")
+summary(clinic_full_data$`PFS.(d)`)
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$`PFS.(d)`)) * 100, 2), "%\n")
+
+```
+
+```{r}
+hist(clinic_full_data$`PFS.(d)`,
+     breaks = 10,
+     main = "Distribución de días de PFS",
+     xlab = "Días",
+     col = "green",
+     border = "black")
+
+```
+### Follow.Up.(d)
+Variavle que dice la duración de seguimiento, expresada en días, para el análisis de supervivencia global. Es decir, para cada paciente, mide el número de días transcurridos desde el punto de partida (por ejemplo, la fecha de diagnóstico o el inicio del tratamiento) hasta
+
+```{r}
+head(clinic_full_data$`Follow.Up.(d)`)
+class(clinic_full_data$`Follow.Up.(d)`)
+cat("Número de NAs:", sum(is.na(clinic_full_data$`Follow.Up.(d)`)), "\n")
+summary(clinic_full_data$`Follow.Up.(d)`)
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$`Follow.Up.(d)`)) * 100, 2), "%\n")
+
+```
+
+```{r}
+hist(clinic_full_data$`Follow.Up.(d)`,
+     breaks = 10,
+     main = "Distribución de días de seguimiento Follow.Up.(d)",
+     xlab = "Días",
+     col = "red",
+     border = "black")
+```
+
+
+### PFS..m.
+
+Define el tiempo que el paciente permanece vivo, medido en meses, y en que la enfermedad permanece sin empeorar (sin progresar) desde un punto inicial definido.
+
+```{r}
+head(clinic_full_data$`PFS.(m)`)
+class(clinic_full_data$`PFS.(m)`)
+cat("Número de NAs:", sum(is.na(clinic_full_data$`PFS.(m)`)), "\n")
+summary(clinic_full_data$`PFS.(m)`)
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$`PFS.(m)`)) * 100, 2), "%\n")
+
+```
+
+```{r}
+hist(clinic_full_data$`PFS.(m)`,
+     breaks = 10,
+     main = "Distribución de meses de PFS",
+     xlab = "Días",
+     col = "red",
+     border = "black")
+```
+
+### Progresión...6
+
+Variable booleana para indicar si hay o no progresión de la enfermedad.
+
+```{r}
+head(clinic_full_data$Progresión...6)
+class(clinic_full_data$Progresión...6)
+cat("Número de NAs:", sum(is.na(clinic_full_data$Progresión...6)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Progresión...6)) * 100, 2), "%\n")
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$Progresión...6 <- factor(clinic_full_data$Progresión...6,
+                                          levels = c(0, 1),
+                                          labels = c("No", "Sí"))
+
+```
+
+```{r}
+plot(clinic_full_data$Progresión...6,
+     main = "Distribución de Progresión",
+     xlab = "Progresión",
+     ylab = "Frecuencia",
+     border = "black")
+```
+
+### EXITUS
+
+Variable que determina el *exitus letalis* se emplea en el ámbito médico para referirse a los casos clínicos en los que la enfermedad ha llevado al paciente a la muerte
+
+```{r}
+head(clinic_full_data$Exitus)
+class(clinic_full_data$Exitus)
+cat("Número de NAs:", sum(is.na(clinic_full_data$Exitus)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Exitus)) * 100, 2), "%\n")
+
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$Exitus <- factor(clinic_full_data$Exitus,
+                                  levels = c(0, 1),
+                                  labels = c("No", "Sí"))
+```
+
+```{r}
+plot(clinic_full_data$Exitus,
+     main = "Distribución de EXITUS",
+     xlab = "EXITUS",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+Nos aseguramos de que no hay casos de exitus sin recurrencia, es decir, sin progresión. Cabria esperar que los casos de exitus positivos sean menores o, como mucho, iguales que los de progresión positiva.
+
+```{r}
+cat("Frecuencias de progresión:\n")
+table(clinic_full_data$Progresión...6)
+
+cat("Frecuencias de Exitus:\n")
+table(clinic_full_data$Exitus)
+```
+
+```{r}
+cat("Numero de casos de exitus en los que no ha habido progresión:", sum(clinic_full_data$Progresión...6=="No" & clinic_full_data$Exitus == "Sí"), "\n")
+
+cat("Numero de casos de progresión en los que no ha habido exitus:", sum(clinic_full_data$Progresión...6=="Sí" & clinic_full_data$Exitus == "No"))
+
+```
+
+### Fecha.de.nacimiento
+
+Fecha de nacimiento del paciente
+
+```{r}
+head(clinic_full_data$Fecha.de.nacimiento)
+class(clinic_full_data$Fecha.de.nacimiento)
+sum(is.na(clinic_full_data$Fecha.de.nacimiento))
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Fecha.de.nacimiento)) * 100, 2), "%\n")
+
+```
+
+Se propone su correcta conversion a formato de fecha
+
+```{r}
+# Convertir la columna a Date
+clinic_full_data$Fecha.de.nacimiento <- as.Date(clinic_full_data$Fecha.de.nacimiento, format = "%d/%m/%Y")
+
+# Obtener el mínimo y máximo de las fechas
+min_date <- min(clinic_full_data$Fecha.de.nacimiento, na.rm = TRUE)
+max_date <- max(clinic_full_data$Fecha.de.nacimiento, na.rm = TRUE)
+
+# Crear secuencia de cortes cada 30 días
+breaks_seq <- seq(min_date, max_date, by = "30 days")
+# Si el último corte es menor que la fecha máxima, agregar la fecha máxima
+if (max(breaks_seq) < max_date) {
+  breaks_seq <- c(breaks_seq, max_date)
+}
+
+# Crear el histograma
+hist(clinic_full_data$Fecha.de.nacimiento,
+     breaks = breaks_seq,
+     main = "Distribución de Fecha de nacimiento",
+     xlab = "Fecha",
+     col = "skyblue",
+     border = "black")
+
+```
+
+De esta variable obtendremos una variable de Edad a día de la última actualización del estudio (14/06/2024).
+
+```{r}
+
+# Define la fecha de referencia (14 de junio de 2024)
+fecha_ref <- as.Date("14/06/2024", format = "%d/%m/%Y")
+# Calcula la edad como diferencia en años (dividiendo entre 365.25) y conviértela a entero.
+clinic_full_data$Edad.ultima.actualizacion <- as.integer((fecha_ref - clinic_full_data$Fecha.de.nacimiento) / 365.25)
+```
+
+### Edad.ultima.actualizacion
+
+Edad del paciente en la última actualización del estudio
+
+```{r}
+head(clinic_full_data$Edad.ultima.actualizacion)
+class(clinic_full_data$Edad.ultima.actualizacion)
+cat("Número de NAs:", sum(is.na(clinic_full_data$Edad.ultima.actualizacion)), "\n")
+summary(clinic_full_data$Edad.ultima.actualizacion)
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Edad.ultima.actualizacion)) * 100, 2), "%\n")
+
+```
+
+```{r}
+hist(clinic_full_data$Edad.ultima.actualizacion,
+     breaks = 10,
+     main = "Distribución de Edad en la última actualización",
+     xlab = "meses",
+     col = "red",
+     border = "black")
+
+```
+
+### Edad.al.diagnóstico
+
+Edad del paciente al tiempo de recibir el diagnóstico
+
+```{r}
+head(clinic_full_data$Edad.al.diagnóstico)
+class(clinic_full_data$Edad.al.diagnóstico)
+sum(is.na(clinic_full_data$Edad.al.diagnóstico))
+summary(clinic_full_data$Edad.al.diagnóstico)
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Edad.al.diagnóstico)) * 100, 2), "%\n")
+
+```
+
+```{r}
+hist(clinic_full_data$Edad.al.diagnóstico,
+     breaks = 10,
+     main = "Distribución de Edad al diagnóstico",
+     xlab = "meses",
+     col = "red",
+     border = "black")
+
+```
+
+### Sexo..0.Mujer..1.Varón.
+
+Variable booleana para indicar sexo del paciente
+
+```{r}
+head(clinic_full_data$`Sexo.(0=Mujer;.1=Varón)`)
+class(clinic_full_data$`Sexo.(0=Mujer;.1=Varón)`)
+cat("Número de NAs", sum(is.na(clinic_full_data$`Sexo.(0=Mujer;.1=Varón)`)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$`Sexo.(0=Mujer;.1=Varón)`)) * 100, 2), "%\n")
+
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$`Sexo.(0=Mujer;.1=Varón)` <- factor(clinic_full_data$`Sexo.(0=Mujer;.1=Varón)`,
+                                                    levels = c("0", "1"),
+                                                    labels = c("Mujer", "Varón"))
+
+```
+
+```{r}
+plot(clinic_full_data$`Sexo.(0=Mujer;.1=Varón)`,
+     main = "Distribución de Sexos",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+### Tabaquismo..0.Nunca.fumador..1.Exfumador..2..Fumador.Activo."
+
+Variable que determina el habito del paciente con respecto al tabaco
+
+```{r}
+head(clinic_full_data$`Tabaquismo.(0=Nunca.fumador;.1=Exfumador;.2=.Fumador.Activo)`)
+class(clinic_full_data$`Tabaquismo.(0=Nunca.fumador;.1=Exfumador;.2=.Fumador.Activo)`)
+cat("Numero de NAs:", sum(is.na(clinic_full_data$`Tabaquismo.(0=Nunca.fumador;.1=Exfumador;.2=.Fumador.Activo)`)),"\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$`Tabaquismo.(0=Nunca.fumador;.1=Exfumador;.2=.Fumador.Activo)`)) * 100, 2), "%\n")
+```
+
+Comprobamos las clases dentro de la variable
+
+```{r}
+unique(clinic_full_data$`Tabaquismo.(0=Nunca.fumador;.1=Exfumador;.2=.Fumador.Activo)`)
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$`Tabaquismo.(0=Nunca.fumador;.1=Exfumador;.2=.Fumador.Activo)` <- factor(
+  clinic_full_data$`Tabaquismo.(0=Nunca.fumador;.1=Exfumador;.2=.Fumador.Activo)`,
+  levels = c(0, 1, 2),
+  labels = c("Nunca", "Exfumador", "Fumador")
+)
+```
+
+```{r}
+plot(clinic_full_data$`Tabaquismo.(0=Nunca.fumador;.1=Exfumador;.2=.Fumador.Activo)`,
+     main = "Distribución de fumador",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+### Tumor.previo
+
+Variable booleana para indicar si el paciente padeció o no tumor previo a la condición del estudio
+
+```{r}
+head(clinic_full_data$Tumor.previo)
+class(clinic_full_data$Tumor.previo)
+cat("Número de NAs:", sum(is.na(clinic_full_data$Tumor.previo)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Tumor.previo)) * 100, 2), "%\n")
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$Tumor.previo <- factor(clinic_full_data$Tumor.previo,
+                                        levels = c(1, 0),
+                                        labels = c("Si", "No"))
+```
+
+```{r}
+plot(clinic_full_data$Tumor.previo,
+     main = "Tumor previo",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+### Escala.ECOG
+
+Evaluación del estado funcional del paciente basada en la ECOG Performance Status. La escala varía de 0 a 5, donde 0 indica un estado óptimo (paciente totalmente activo) y 5 representa el fallecimiento
+
+```{r}
+head(clinic_full_data$Escala.ECOG)
+class(clinic_full_data$Escala.ECOG)
+cat("Número de NAs", sum(is.na(clinic_full_data$Escala.ECOG)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Escala.ECOG)) * 100, 2), "%\n")
+```
+
+Clases que tenemos dentro de la variable `Escala.ECOG`:
+
+```{r}
+unique(clinic_full_data$Escala.ECOG)
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$Escala.ECOG <- factor(clinic_full_data$Escala.ECOG,
+                                              levels = c(0,1,2,3,4,5))
+```
+
+```{r}
+plot(clinic_full_data$Escala.ECOG,
+     main = "Escala ECOG",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+### Fecha.de.diagnóstico
+
+Fecha en la que se le diagnosticó la enfermedad. Utilizaremos esta variable para sacar otra variable llamada "Tiempo.hasta.inicio.IO"
+
+```{r}
+head(clinic_full_data$Fecha.de.diagnóstico)
+class(clinic_full_data$Fecha.de.diagnóstico)
+sum(is.na(clinic_full_data$Fecha.de.diagnóstico))
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Fecha.de.diagnóstico)) * 100, 2), "%\n")
+
+```
+
+Se propone su correcta conversion a formato de fecha
+
+```{r}
+# Convertir la columna a Date
+clinic_full_data$Fecha.de.diagnóstico <- as.Date(clinic_full_data$Fecha.de.diagnóstico, format = "%d/%m/%Y")
+
+# Definir cortes
+breaks_seq <- seq(min(clinic_full_data$Fecha.de.diagnóstico, na.rm = TRUE),
+                  max(clinic_full_data$Fecha.de.diagnóstico, na.rm = TRUE),
+                  by = "1 days")
+
+# Crear el histograma
+hist(clinic_full_data$Fecha.de.diagnóstico,
+     breaks = breaks_seq,
+     main = "Distribución de Fecha de diagnóstico",
+     xlab = "Fecha",
+     col = "skyblue",
+     border = "black")
+```
+
+### Tiempo.hasta.inicio.IO
+
+```{r}
+clinic_full_data$Tiempo.hasta.inicio.IO <- as.numeric(clinic_full_data$Fecha.de.inicio.IO - clinic_full_data$Fecha.de.diagnóstico)
+```
+
+Define el tiempo que pasa (medido en días) desde que el paciente recibe el diagnostico hasta que inicia el tratamiento con inmunoterapia.
+
+Define el tiempo que el paciente permanece vivo, medido en días, y en que la enfermedad permanece sin empeorar (sin progresar) desde un punto inicial definido.
+
+```{r}
+head(clinic_full_data$Tiempo.hasta.inicio.IO)
+class(clinic_full_data$Tiempo.hasta.inicio.IO)
+summary(clinic_full_data$Tiempo.hasta.inicio.IO)
+cat("Número de NAs:", sum(is.na(clinic_full_data$Tiempo.hasta.inicio.IO)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Tiempo.hasta.inicio.IO)) * 100, 2), "%\n")
+
+```
+
+```{r}
+hist(clinic_full_data$Tiempo.hasta.inicio.IO,
+     breaks = 50,
+     main = "Distribución de días de Tiempo hasta el inicio de IO",
+     xlab = "Días",
+     col = "green",
+     border = "black")
+
+```
+
+Tenemos valores algo sospechosos de ser errores de entrada. Obtenemos un máximo de tiempo hasta el diagnóstico de 7057 días, lo que es lo mismo, 19 años. La fecha que genera esa cifra es la fecha de diagnostico: 01-01-2003. El hecho de que sea una cifra tan peculiar (el día de año nuevo) y tan lejana, hace sospechar que se trata de un error.
+
+### Estadio.al.diagnóstico
+
+Indica el estadio del cáncer al momento del diagnóstico, expresado en categorías que reflejan la extensión y severidad de la enfermedad. Estadio I: Indica un tumor localizado y generalmente pequeño, sin evidencia de diseminación a ganglios linfáticos ni a órganos distantes. Estadio II y III: Sugieren una mayor extensión local y regional del tumor, con compromiso de ganglios linfáticos en mayor o menor medida. Estadio IV: Representa enfermedad avanzada con metástasis a otros órganos.
+
+```{r}
+head(clinic_full_data$Estadio.al.diagnóstico)
+class(clinic_full_data$Estadio.al.diagnóstico)
+sum(is.na(clinic_full_data$Estadio.al.diagnóstico))
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Estadio.al.diagnóstico)) * 100, 2), "%\n")
+
+```
+
+Clases que tenemos dentro de la variable `Estadio.al.diagnóstico`:
+
+```{r}
+unique(clinic_full_data$Estadio.al.diagnóstico)
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+# Factorizamos por niveles para ordenarlos por severidad
+clinic_full_data$Estadio.al.diagnóstico <- factor(clinic_full_data$Estadio.al.diagnóstico,
+                                                  levels = c("IA", "IB", "IIA", "IIB", "IIIA", "IIIB", "IIIC", "IVA", "IVB"),
+                                                  ordered = TRUE)
+
+```
+
+```{r}
+plot(clinic_full_data$Estadio.al.diagnóstico,
+     main = "Estadio al diagnóstico",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+### Histología
+
+Tipo histológico del tumor, que clasifica el cáncer según la apariencia de las células bajo el microscopio
+
+```{r}
+clinic_full_data$Histología[clinic_full_data$Histología == "No especificado"] <- NA
+
+```
+
+```{r}
+head(clinic_full_data$Histología)
+class(clinic_full_data$Histología)
+sum(is.na(clinic_full_data$Histología))
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Histología)) * 100, 2), "%\n")
+```
+
+Clases que tenemos dentro de la variable `Histologia`:
+
+```{r}
+unique(clinic_full_data$Histología)
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$Histología <- factor(clinic_full_data$Histología, 
+                                                  levels = unique(clinic_full_data$Histología))
+```
+
+```{r}
+# Obtener la tabla de frecuencias de la variable Histología
+tabla_histologia <- table(clinic_full_data$Histología)
+
+# Ajustar márgenes para darle más espacio al eje con las etiquetas largas (margen izquierdo)
+par(mar = c(5, 12, 4, 2) + 0.1)
+
+# Graficar un barplot horizontal
+barplot(tabla_histologia,
+        main = "Histología",
+        xlab = "Frecuencia",
+        horiz = TRUE,
+        las = 1,         # las=1 para que el texto de las etiquetas se muestre horizontal
+        cex.names = 0.8) # Ajusta el tamaño del texto de los nombres si es necesario
+
+```
+
+### Mutaciones
+
+Transformamos las variables de las mutaciones sustituyendo los registros "No dato" por `NA`.
+
+```{r}
+# Transformación de "No dato" a NA en cada variable
+clinic_full_data$EGFR[clinic_full_data$EGFR == "No dato"] <- NA
+clinic_full_data$ALK[clinic_full_data$ALK == "No dato"] <- NA
+clinic_full_data$ROS1[clinic_full_data$ROS1 == "No dato"] <- NA
+clinic_full_data$RET[clinic_full_data$RET == "No dato"] <- NA
+clinic_full_data$`BRAF.(V600)`[clinic_full_data$`BRAF.(V600)` == "No dato"] <- NA
+clinic_full_data$KRAS[clinic_full_data$KRAS == "No dato"] <- NA
+
+# Vector con los nombres de las variables a convertir a factor
+vars <- c("EGFR", "ALK", "ROS1", "RET", "BRAF.(V600)", "KRAS")
+
+# Convertir cada variable de la lista a factor
+clinic_full_data[vars] <- lapply(clinic_full_data[vars], factor)
+
+```
+
+Visualizamos las frecuencias.
+
+```{r}
+par(mfrow = c(2, 3), mar = c(8, 4, 4, 2) + 0.1)
+
+for (v in vars) {
+  # Crear tabla de frecuencias incluyendo NAs
+  counts <- table(clinic_full_data[[v]], useNA = "ifany")
+  
+  # Graficar la tabla de frecuencias con barplot
+  barplot(counts,
+          main = v,
+          ylab = "Frecuencia",
+          col = "lightblue",
+          border = "black",
+          las = 2,         # Rota las etiquetas del eje x para mayor legibilidad
+          cex.names = 0.8) # Ajusta el tamaño del texto en las etiquetas
+}
+
+```
+
+A continuación, realizaremos el mismo procedimiento sustituyendo "No procede" por `NA`.
+
+```{r}
+clinic_full_data$EGFR[clinic_full_data$EGFR == "No procede"] <- NA
+clinic_full_data$ALK[clinic_full_data$ALK == "No procede"] <- NA
+clinic_full_data$ROS1[clinic_full_data$ROS1 == "No procede"] <- NA
+clinic_full_data$RET[clinic_full_data$RET == "No procede"] <- NA
+clinic_full_data$`BRAF.(V600)`[clinic_full_data$`BRAF.(V600)` == "No procede"] <- NA
+clinic_full_data$KRAS[clinic_full_data$KRAS == "No procede"] <- NA
+
+clinic_full_data$EGFR <- droplevels(clinic_full_data$EGFR)
+clinic_full_data$ALK <- droplevels(clinic_full_data$ALK)
+clinic_full_data$ROS1 <- droplevels(clinic_full_data$ROS1)
+clinic_full_data$RET <- droplevels(clinic_full_data$RET)
+clinic_full_data$`BRAF.(V600)` <- droplevels(clinic_full_data$`BRAF.(V600)`)
+clinic_full_data$KRAS <- droplevels(clinic_full_data$KRAS)
+
+```
+
+Procedemos con la misma visualización y una tabla de frecuencias:
+
+```{r}
+par(mfrow = c(2, 3), mar = c(8, 4, 4, 2) + 0.1)
+
+for (v in vars) {
+  # Crear tabla de frecuencias incluyendo NAs
+  counts <- table(clinic_full_data[[v]], useNA = "ifany")
+  
+  # Graficar la tabla de frecuencias con barplot
+  barplot(counts,
+          main = v,
+          ylab = "Frecuencia",
+          col = "lightblue",
+          border = "black",
+          las = 2,         # Rota las etiquetas del eje x para mayor legibilidad
+          cex.names = 0.8) # Ajusta el tamaño del texto en las etiquetas
+}
+```
+
+```{r}
+# Crear una lista con tablas de frecuencia para cada variable, incluyendo los NA
+freq_tables <- lapply(clinic_full_data[vars], function(x) table(x, useNA = "ifany"))
+
+# Imprimir cada tabla de frecuencias
+for (var_name in names(freq_tables)) {
+  cat("Frecuencias para", var_name, ":\n")
+  print(freq_tables[[var_name]])
+  cat("\n")
+}
+
+```
+
+### Mutacion.general
+
+Creamos una nueva variable en la que recopilamos todas las mutaciones y factorizamos la presencia o ausencia de mutación.
+
+```{r}
+# Creamos una matriz con las condiciones, sin eliminar los NA
+M <- cbind(
+  clinic_full_data$EGFR == "Mutado",
+  clinic_full_data$ALK == "Translocado",
+  clinic_full_data$ROS1 == "Translocado",
+  clinic_full_data$RET == "Translocado",
+  clinic_full_data$`BRAF.(V600)` == "Mutado",
+  clinic_full_data$KRAS == "Mutado"
+)
+
+# Al no especificar na.rm, si existe algún NA en la fila, rowSums devolverá NA.
+clinic_full_data$Mutacion.General <- ifelse(rowSums(M) > 0, "Si", "No")
+
+```
+
+```{r}
+# Reemplazamos los NA resultantes por "Desconocido"
+clinic_full_data$Mutacion.General[is.na(clinic_full_data$Mutacion.General)] <- "Desconocido"
+
+# Factorizamos incluyendo la categoría "Desconocido"
+clinic_full_data$Mutacion.General <- factor(
+  clinic_full_data$Mutacion.General,
+  levels = c("Si", "No", "Desconocido")
+)
+```
+
+```{r}
+# Crear la tabla de frecuencias, incluyendo los NAs
+tabla_mutacion <- table(clinic_full_data$Mutacion.General, useNA = "ifany")
+
+# Graficar la tabla de frecuencias con barplot
+barplot(tabla_mutacion,
+        main = "Presencia/Ausencia confirmada de mutación",
+        ylab = "Frecuencia",
+        col = "lightblue",
+        border = "black",
+        las = 2)  # Rota las etiquetas del eje x si es necesario
+
+```
+
+### Fecha.de.diagnóstico.de.enfermedad.metastática
+
+Fecha en la que se dió el diagnóstico de metastasis
+
+```{r}
+head(clinic_full_data$Fecha.de.diagnóstico.de.enfermedad.metastática)
+class(clinic_full_data$Fecha.de.diagnóstico.de.enfermedad.metastática)
+sum(is.na(clinic_full_data$Fecha.de.diagnóstico.de.enfermedad.metastática))
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Fecha.de.diagnóstico.de.enfermedad.metastática)) * 100, 2), "%\n")
+
+```
+
+Se propone su correcta conversión a formato de fecha
+
+```{r}
+# Convertir la columna a Date
+clinic_full_data$Fecha.de.diagnóstico.de.enfermedad.metastática <- as.Date(clinic_full_data$Fecha.de.diagnóstico.de.enfermedad.metastática, format = "%d/%m/%Y")
+
+# Definir cortes
+breaks_seq <- seq(min(clinic_full_data$Fecha.de.diagnóstico.de.enfermedad.metastática, na.rm = TRUE),
+                  max(clinic_full_data$Fecha.de.diagnóstico.de.enfermedad.metastática, na.rm = TRUE),
+                  by = "3 days")
+
+# Crear el histograma
+hist(clinic_full_data$Fecha.de.diagnóstico.de.enfermedad.metastática,
+     breaks = breaks_seq,
+     main = "Distribución de Fecha de diagnóstico de enfermedad metastática",
+     xlab = "Fecha",
+     col = "skyblue",
+     border = "black")
+```
+
+Para asegurarnos de que los registros tienen sentido vamos a visualizar la presencia o no fecha de diagnóstico, asumiendo que es que hay metastásis, junto con la variable de `Estadio.al.diagnóstico`. Concretamente con el estadío IV.
+
+```{r}
+# Contar pacientes con Estadio al diagnóstico de tipo IV (IVA o IVB)
+num_estadioIV <- sum(clinic_full_data$`Estadio.al.diagnóstico` %in% c("IVA", "IVB"), na.rm = TRUE)
+
+# Contar pacientes que tienen una fecha en Fecha de diagnóstico de enfermedad metastática (es decir, que no es NA)
+num_fecha_metastasis <- sum(!is.na(clinic_full_data$`Fecha.de.diagnóstico.de.enfermedad.metastática`))
+
+# Crear un vector con ambos conteos
+counts <- c("Estadio IV" = num_estadioIV, 
+            "Fecha Dx Metastásica" = num_fecha_metastasis)
+
+# Graficar el resultado con un barplot sencillo
+barplot(counts, 
+        main = "Número de pacientes según criterio", 
+        ylab = "Número de pacientes", 
+        col = "lightblue", 
+        border = "black")
+
+```
+
+En la gráfica vemos que casi todos los pacientes son que se les ha diagnosticado enfermedad metastásica, es decir que están en el estadío IV. Sin embargo, especificamente en el número de pacientes en estadío IV tenemos bastantes menos. Si queremos tener en cuenta el estadio del paciente, tal y como propuso Nadina, tenemos que esclarecer si fecha de diagnóstico de enfermedad con metástasis.
+
+### Quimioterapia.adyuvante
+
+Indica el estado de la quimioterapia adyuvante en el paciente
+
+```{r}
+head(clinic_full_data$Quimioterapia.adyuvante)
+class(clinic_full_data$Quimioterapia.adyuvante)
+sum(is.na(clinic_full_data$Quimioterapia.adyuvante))
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Quimioterapia.adyuvante)) * 100, 2), "%\n")
+```
+
+Clases que tenemos dentro de la variable `Quimioterapia.adyuvante`:
+
+```{r}
+unique(clinic_full_data$Quimioterapia.adyuvante)
+```
+
+Se propone realizar una factorización de las clases. Considerando la categoría "No aplica" como `NA`.
+
+```{r}
+# Reemplazar "No aplica" por NA en la variable Quimioterapia.adyuvante
+clinic_full_data$Quimioterapia.adyuvante[clinic_full_data$Quimioterapia.adyuvante == "No aplica"] <- NA
+
+
+# Contar el número y porcentaje de NAs
+num_NA <- sum(is.na(clinic_full_data$Quimioterapia.adyuvante))
+porcentaje_NA <- round(mean(is.na(clinic_full_data$Quimioterapia.adyuvante)) * 100, 2)
+cat("Número de NAs:", num_NA, "\n")
+cat("Porcentaje de NAs:", porcentaje_NA, "%\n")
+
+# Crear una tabla de frecuencias que incluya los NAs
+tabla_quimio <- table(clinic_full_data$Quimioterapia.adyuvante, useNA = "ifany")
+
+# Graficar la tabla de frecuencias con barplot
+barplot(tabla_quimio,
+        main = "Frecuencia de Quimioterapia Adyuvante",
+        ylab = "Número de pacientes",
+        col = "lightblue",
+        border = "black",
+        las = 2)  # Rotar etiquetas si es necesario
+
+```
+
+### Radioterapia.adyuvante
+
+Indica el estado de la radioterapia adyuvante en el paciente.
+
+Vemos las clases presentes en la variable
+
+```{r}
+unique(clinic_full_data$Radioterapia.adyuvante)
+```
+
+Reemplazar "No aplica" por NA en la variable Radioterapia.adyuvante
+
+```{r}
+clinic_full_data$Radioterapia.adyuvante[clinic_full_data$Radioterapia.adyuvante == "No aplica"] <- NA
+```
+
+```{r}
+# Contar el número y porcentaje de NAs después de la transformación
+num_NA <- sum(is.na(clinic_full_data$Radioterapia.adyuvante))
+porcentaje_NA <- round(mean(is.na(clinic_full_data$Radioterapia.adyuvante)) * 100, 2)
+cat("Número de NAs:", num_NA, "\n")
+cat("Porcentaje de NAs:", porcentaje_NA, "%\n")
+
+# Crear una tabla de frecuencias que incluya los NAs
+tabla_radio <- table(clinic_full_data$Radioterapia.adyuvante, useNA = "ifany")
+
+# Graficar la tabla de frecuencias con barplot
+barplot(tabla_radio,
+        main = "Frecuencia de Radioterapia Adyuvante",
+        ylab = "Número de pacientes",
+        col = "lightblue",
+        border = "black",
+        las = 2)  # Rotar etiquetas del eje x si es necesario
+```
+### Quimio.Radio.Adj
+
+Este bloque crea la variable `Quimio.Radio.Adj` combinando la información de `Quimioterapia.adyuvante` y `Radioterapia.adyuvante`:
+
+* Asigna “Quimioterapia adyuvante” si solo la quimio es “Si”,
+* “Radioterapia adyuvante” si solo la radio es “Si”,
+* “Quimio y Radio adyuvante” si ambas son “Si”,
+* y “Desconocido/No aplica” para los casos en que ambas sean “No” o faltantes.
+  Finalmente la factoriza con un orden lógico de niveles.
+
+```{r}
+clinic_full_data <- clinic_full_data %>%
+  mutate(
+    Quimio.Radio.Adj = case_when(
+      Quimioterapia.adyuvante == "Si" & Radioterapia.adyuvante == "Si" ~ "Quimio y Radio adyuvante",
+      Quimioterapia.adyuvante == "Si"                                 ~ "Quimioterapia adyuvante",
+      Radioterapia.adyuvante == "Si"                                   ~ "Radioterapia adyuvante",
+      TRUE                                                              ~ "Desconocido/No aplica"
+    ),
+    Quimio.Radio.Adj = factor(
+      Quimio.Radio.Adj,
+      levels = c(
+        "Quimioterapia adyuvante",
+        "Radioterapia adyuvante",
+        "Quimio y Radio adyuvante",
+        "Desconocido/No aplica"
+      )
+    )
+  ) %>% relocate(Quimio.Radio.Adj, .after = 2)
+```
+
+
+### RT.QT.Radical
+
+Indica el estado de RT.QT.Radical (la combinación de radioterapia y quimioterapia radical) en el paciente. Vemos las clases presentes en la variable:
+
+```{r}
+unique(clinic_full_data$RT.QT.Radical)
+```
+
+Reemplazamos "No aplica" por NA en la variable RT.QT.Radical.
+
+```{r}
+clinic_full_data$RT.QT.Radical[clinic_full_data$RT.QT.Radical == "No aplica"] <- NA
+```
+
+```{r}
+# Contar el número y porcentaje de NAs después de la transformación
+num_NA <- sum(is.na(clinic_full_data$RT.QT.Radical))
+porcentaje_NA <- round(mean(is.na(clinic_full_data$RT.QT.Radical)) * 100, 2)
+cat("Número de NAs:", num_NA, "\n")
+cat("Porcentaje de NAs:", porcentaje_NA, "%\n")
+
+# Crear una tabla de frecuencias que incluya los NAs
+tabla_radio <- table(clinic_full_data$RT.QT.Radical, useNA = "ifany")
+
+# Graficar la tabla de frecuencias con barplot
+barplot(tabla_radio,
+        main = "Frecuencia de RT.QT.Radical",
+        ylab = "Número de pacientes",
+        col = "lightblue",
+        border = "black",
+        las = 2)  # Rotar etiquetas del eje x si es necesario
+```
+
+### IO.adyuvante
+
+Indica el estado de la inmunoterapia adyuvante en el paciente. Vemos las clases presentes en la variable:
+
+```{r}
+unique(clinic_full_data$IO.adyuvante)
+```
+
+Vemos que solo presenta dos clases, por lo que no hay que realizar transformación.
+
+```{r}
+head(clinic_full_data$IO.adyuvante)
+class(clinic_full_data$IO.adyuvante)
+cat("Número de NAs:", sum(is.na(clinic_full_data$IO.adyuvante)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$IO.adyuvante)) * 100, 2), "%\n")
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$IO.adyuvante <- factor(clinic_full_data$IO.adyuvante, 
+                                                  levels = unique(clinic_full_data$IO.adyuvante))
+```
+
+```{r}
+plot(clinic_full_data$IO.adyuvante,
+     main = "Inmunoterapia adyuvante",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+### Fecha.de.inicio.IO..metastáticos.
+
+Fecha en la que se inició el tratamiento de IO (inmunoterapia o terapia oncológica) específicamente en pacientes con enfermedad metastásica. DE esta variable obtendremos una nueva variable obtenida a partir de la fecha de diagnostico de enfermedad metastásica.
+
+```{r}
+head(clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)`)
+class(clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)`)
+sum(is.na(clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)`))
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)`)) * 100, 2), "%\n")
+
+```
+
+Se propone su correcta conversion a formato de fecha
+
+```{r}
+# Convertir la columna a Date
+clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)` <- as.Date(clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)`, format = "%d/%m/%Y")
+
+# Definir cortes
+breaks_seq <- seq(min(clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)`, na.rm = TRUE),
+                  max(clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)`, na.rm = TRUE),
+                  by = "1 days")
+
+# Crear el histograma
+hist(clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)`,
+     breaks = breaks_seq,
+     main = "Distribución de Fecha de incio de IO en pacientes metastásicos",
+     xlab = "Fecha",
+     col = "skyblue",
+     border = "black")
+
+```
+
+### Tiempo.hasta.inicio.IO.metas
+
+```{r}
+clinic_full_data$Tiempo.hasta.inicio.IO.metas <- as.numeric(
+  clinic_full_data$`Fecha.de.inicio.IO.(metastáticos)` - clinic_full_data$`Fecha.de.diagnóstico.de.enfermedad.metastática`
+)
+clinic_full_data %>% relocate(Tiempo.hasta.inicio.IO.metas, .after = 4)
+```
+
+```{r}
+# Visualizar los primeros casos, la clase y el resumen de la nueva variable
+head(clinic_full_data$Tiempo.hasta.inicio.IO.metas)
+class(clinic_full_data$Tiempo.hasta.inicio.IO.metas)
+summary(clinic_full_data$Tiempo.hasta.inicio.IO.metas)
+cat("Número de NAs:", sum(is.na(clinic_full_data$Tiempo.hasta.inicio.IO.metas)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Tiempo.hasta.inicio.IO.metas)) * 100, 2), "%\n")
+```
+
+```{r}
+# Graficar la distribución de la variable con un histograma
+hist(clinic_full_data$Tiempo.hasta.inicio.IO.metas,
+     breaks = 50,
+     main = "Distribución de días de Tiempo hasta el inicio IO (metastáticos)",
+     xlab = "Días",
+     col = "green",
+     border = "black")
+```
+
+### TIPO.IO..metastáticos
+
+Variable que indica el tipo de inmunoterapia realizada a los pacientes metastásicos
+
+```{r}
+head(clinic_full_data$`TIPO.IO.(metastáticos)`)
+class(clinic_full_data$`TIPO.IO.(metastáticos)`)
+cat("Número de NAs:", sum(is.na(clinic_full_data$`TIPO.IO.(metastáticos)`)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$`TIPO.IO.(metastáticos)`)) * 100, 2), "%\n")
+
+```
+
+Clases que tenemos dentro de la variable `TIPO.IO..metastáticos.`:
+
+```{r}
+unique(clinic_full_data$`TIPO.IO.(metastáticos)`)
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$`TIPO.IO.(metastáticos)` <- factor(clinic_full_data$`TIPO.IO.(metastáticos)`, 
+                                                  levels = unique(clinic_full_data$`TIPO.IO.(metastáticos)`))
+```
+
+```{r}
+plot(clinic_full_data$`TIPO.IO.(metastáticos)`,
+     main = "Tipo de inmunoterapia en pacientes metastásicos",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+### IO.Tipo.General
+
+Variable que recopila a los pacientes no metastásicos que recibieron IO adyuvante junto con los pacientes metastásicos según tipo de IO.
+
+```{r}
+# Extraer las dos variables de interés:
+io_met <- clinic_full_data$`TIPO.IO.(metastáticos)`
+io_adyuv <- clinic_full_data$IO.adyuvante
+
+# Crear la nueva variable. 
+# Si TIPO.IO.(metastáticos) es NA y IO.adyuvante es "Sí", asigna "IO adyuvante no met",
+# de lo contrario, se usa el valor original de TIPO.IO.(metastáticos).
+clinic_full_data$IO.Tipo.General <- ifelse(
+  is.na(io_met) & io_adyuv == "Sí",
+  "IO adyuvante no met",
+  as.character(io_met)
+)
+
+# Convertir la nueva variable a factor.
+# Se toman los niveles existentes en TIPO.IO.(metastáticos) (sin incluir NA) y se añade el nuevo nivel.
+current_levels <- levels(clinic_full_data$`TIPO.IO.(metastáticos)`)
+new_levels <- c(current_levels, "IO adyuvante no met")
+clinic_full_data$IO.Tipo.General <- factor(clinic_full_data$IO.Tipo.General, levels = new_levels)
+
+# Verificar la tabla de frecuencias de la nueva variable, incluyendo NA
+table(clinic_full_data$IO.Tipo.General, useNA = "ifany")
+
+```
+
+```{r}
+# Ajustar temporalmente los márgenes de la ventana gráfica
+# Aumentamos especialmente el margen izquierdo (par(mar = c(bottom, left, top, right)))
+old_par <- par(mar = c(5, 15, 4, 2) + 0.1)
+
+# Crear la tabla de frecuencias
+tabla_IO <- table(clinic_full_data$IO.Tipo.General, useNA = "ifany")
+
+# Graficar el barplot horizontal
+barplot(tabla_IO,
+        main = "Frecuencia de IO.Tipo.General",
+        xlab = "Frecuencia",
+        horiz = TRUE,
+        las = 1,         # las=1 para etiquetas horizontales en el eje y
+        cex.names = 0.8, # Ajusta el tamaño del texto de las etiquetas (puedes disminuirlo aún más si es necesario)
+        col = "lightblue",
+        border = "black")
+
+# (Opcional) Restablecer los parámetros por defecto
+par(old_par)
+
+
+```
+
+```{r}
+cat("Número de NAs:", sum(is.na(clinic_full_data$IO.Tipo.General)), "\n",
+    "Porcentaje de NAs:", round(mean(is.na(clinic_full_data$IO.Tipo.General)) * 100, 2), "%\n")
+
+```
+
+### Tipo.de.IO.Cat..0.IO..1.ChIO
+
+Variable que indica si la inmunoterapia fue sola o acompañada de quimioterapia
+
+```{r}
+head(clinic_full_data$`Tipo.de.IO.Cat.(0=IO;.1=ChIO)`)
+class(clinic_full_data$`Tipo.de.IO.Cat.(0=IO;.1=ChIO)`)
+cat("Número de NAs:", sum(is.na(clinic_full_data$`Tipo.de.IO.Cat.(0=IO;.1=ChIO)`)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$`Tipo.de.IO.Cat.(0=IO;.1=ChIO)`)) * 100, 2), "%\n")
+
+```
+
+Clases que tenemos dentro de la variable `Tipo.de.IO.Cat..0.IO..1.ChIO.`:
+
+```{r}
+unique(clinic_full_data$`Tipo.de.IO.Cat.(0=IO;.1=ChIO)`)
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$`Tipo.de.IO.Cat.(0=IO;.1=ChIO)` <- factor(clinic_full_data$`Tipo.de.IO.Cat.(0=IO;.1=ChIO)`,
+                                                        levels = c(0, 1),
+                                                        labels = c("IO", "ChIO"))
+
+```
+
+```{r}
+plot(clinic_full_data$`Tipo.de.IO.Cat.(0=IO;.1=ChIO)`,
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+Este bloque recodifica la columna Tipo.de.IO.Cat.(0=IO;.1=ChIO) usando IO.Tipo.General, asignando tres niveles:
+
+- “IO” para inmunoterapia sola,
+
+- “ChIO” para inmunoterapia + quimioterapia,
+
+- “IO combinado” para inmunoterapia + antiangiogénico o IO adyuvante en pacientes no metastásicos.
+
+Luego factoriza esa misma variable con levels = c("IO","ChIO","IO combinado"), garantizando ese orden y dejando el resto en NA.
+
+```{r}
+clinic_full_data <- clinic_full_data %>%
+  mutate(
+    # Reconstruimos el factor original en 3 categorías
+    `Tipo.de.IO.Cat.(0=IO;.1=ChIO)` = case_when(
+      IO.Tipo.General == "Inmunoterapia"                     ~ "IO",
+      IO.Tipo.General == "Inmunoterapia + quimioterapia"     ~ "ChIO",
+      IO.Tipo.General %in% c("Inmunoterapia + antiangiogénico",
+                             "IO adyuvante no met")          ~ "IO combinado",
+      TRUE                                                    ~ NA_character_
+    ),
+    # Finalmente volvemos a factorizarlo con los 3 niveles
+    `Tipo.de.IO.Cat.(0=IO;.1=ChIO)` = factor(
+      `Tipo.de.IO.Cat.(0=IO;.1=ChIO)`,
+      levels = c("IO", "ChIO", "IO combinado")
+    )
+  )
+```
+
+
+### Diana.IO
+
+Indica la diana de la terapia inmunológica aplicada
+
+```{r}
+head(clinic_full_data$Diana.IO)
+class(clinic_full_data$Diana.IO)
+sum(is.na(clinic_full_data$Diana.IO))
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Diana.IO)) * 100, 2), "%\n")
+```
+
+Clases que tenemos dentro de la variable `Diana.IO`:
+
+```{r}
+unique(clinic_full_data$Diana.IO)
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$Diana.IO <- factor(clinic_full_data$Diana.IO, 
+                                                  levels = unique(clinic_full_data$Diana.IO))
+```
+
+```{r}
+plot(clinic_full_data$Diana.IO,
+     main = "Diana de la terapia inmunológica aplicada",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+### Nº.de.líneas.previas
+
+Número de líneas de tratamiento que el paciente ha recibido antes del tratamiento actual. Usaremos esta variable para crear una nueva que indicará si el paciente ha recibido o no tratamiento previo.
+
+```{r}
+head(clinic_full_data$Nº.de.líneas.previas)
+class(clinic_full_data$Nº.de.líneas.previas)
+cat("Número de NAs:",sum(is.na(clinic_full_data$Nº.de.líneas.previas)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Nº.de.líneas.previas)) * 100, 2), "%\n")
+```
+
+Se propone realizar una factorización de las clases
+
+```{r}
+clinic_full_data$Nº.de.líneas.previas <- factor(clinic_full_data$Nº.de.líneas.previas, 
+                                                  levels = unique(clinic_full_data$Nº.de.líneas.previas))
+```
+
+```{r}
+plot(clinic_full_data$Nº.de.líneas.previas,
+     main = "Número de líneas de tratamiento recibidas previamente",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+### Presencia.linea.Previa
+
+Variable obtenida a partir de la variable de numero de líneas previas. Nos indica si el paciente tiene o no tratamiento previo.
+
+```{r}
+clinic_full_data$Presencia.linea.Previa <- ifelse(
+  is.na(clinic_full_data$`Nº.de.líneas.previas`), 
+  NA, 
+  ifelse(as.numeric(as.character(clinic_full_data$`Nº.de.líneas.previas`)) > 0, "Si", "No")
+)
+
+# Convertir a factor y definir el orden de niveles, por ejemplo: No (antes) y Si (después)
+clinic_full_data$Presencia.linea.Previa <- factor(clinic_full_data$Presencia.linea.Previa, levels = c("No", "Si"))
+```
+
+```{r}
+head(clinic_full_data$Presencia.linea.Previa)
+class(clinic_full_data$Presencia.linea.Previa)
+cat("Número de NAs:",sum(is.na(clinic_full_data$Presencia.linea.Previa)), "\n")
+cat("Porcentaje de NAs:", round(mean(is.na(clinic_full_data$Presencia.linea.Previa)) * 100, 2), "%\n")
+```
+
+```{r}
+plot(clinic_full_data$Presencia.linea.Previa,
+     main = "Presencia de tratamiento de línea previa",
+     ylab = "Frecuencia",
+     col = "lightblue",
+     border = "black")
+```
+
+# Eliminación de variables
+
+Eliminamos las columnas discutudas en la reunión y consideradas no relevantes para el modelo
+
+```{r}
+
+clinic_full_data <- clinic_full_data %>%
+  select(
+    -Paciente.fuera.del.estudio,
+    -Motivo.fuera.estudio,
+    -Comentarios,
+    -Fecha.de.progresión,
+    -Tipo.de.Progresión,
+    -Evidencia.de.Progresión,
+    -Progresión...15,
+    -Fecha.Exitus,
+    -EXITUS,
+    -EXITUS...CAUSA.EXITUS,
+    -EXITUS...CAUSA.EXITUS...Otras.causas.Exitus,
+    -Fecha.última.visita,
+    -`OS.(d)`,           # aquí los backticks
+    -`OS.(m)`,           # y aquí
+    -`FU.(months)`,
+    -Tipo.de.tumor.previo,
+    -`EGFR...Qué.mutación.presenta?`,
+    -`KRAS...Qué.mutación.presenta?`,
+    -Quimioterapia.adyuvante...Fecha.inicio,
+    -Quimioterapia.adyuvante...Fecha.fin,
+    -Radioterapia.adyuvante...Dosis.de.radioterapia,
+    -Radioterapia.adyuvante...Fecha.inicio,
+    -Radioterapia.adyuvante...Fecha.fin,
+    -RT.QT.Radical...Tipo.de.RT.QT,
+    -RT.QT.Radical...Dosis.de.radioterapia,
+    -RT.QT.Radical...Fecha.inicio.RT,
+    -RT.QT.Radical...Fecha.fin.RT,
+    -RT.QT.Radical...Fecha.inicio.QT,
+    -RT.QT.Radical...Fecha.fin.QT,
+    -IO.adyuvante...Tipo.de.IO,
+    -IO.adyuvante...Fecha.inicio,
+    -IO.adyuvante...Fecha.fin,
+    -`Fármaco.de.IO.(metastáticos)`,
+    -`Fármaco.de.IO.(metastáticos)...Especificar`,
+    -IO.adyuvante,
+    -Diana.IO...Especificar,
+    -`Nº.de.líneas.previas...1ª.Línea`,
+    -`Nº.de.líneas.previas...2ª.Linea`,
+    -`Nº.de.líneas.previas...3ª.Línea`,
+    -Tejido,
+    -`Tejido...Tipo.de.tejido`,
+    -Tejido...Microtomía,
+    -`Tejido...Microtomía...Fecha.de.envío`,
+    -Tejido...RNA,
+    -`Tejido...RNA...Material.válido`,
+    -`Tejido...RNA...Material.válido...Envío.a.Atrys`,
+    -`Tejido...RNA...Fecha.extracción.RNA`,
+    -`Tejido...RNA...Material.válido...Envío.a.Atrys...Fecha.envío.RNA`,
+    -`Tejido...RNA...Material.válido...Envío.a.Atrys...TCR.Secuenciado`,
+    -`Tejido...IHQ`,
+    -`BS1.Fecha.1ª.extracción...83`,
+    -`BS1.Fecha.1ª.extracción...84`,
+    -`BS1.Fecha.recepción.al.laboratorio`,
+    -BS1.Procesamiento,
+    -BS1.Plasma,
+    -`BS1.Plasma...Citoquinas`,
+    -`BS1.Plasma...Extracción.cfDNA`,
+    -`BS1.Plasma...Extracción.cfDNA...NGS`,
+    -BS1.PBMCs,
+    -`BS1.PBMCs...Número.de.viales.de.PBMCs`,
+    -`BS1.PBMCs...Citometría.de.flujo`,
+    -`BS1.PBMCs...Citometría.de.flujo...Inclusión.en.estadística`,
+    -BS1.PBMCs...RNA,
+    -`BS1.PBMCs...RNA...Fecha.de.extracción`,
+    -`BS1.PBMCs...RNA...Material.válido`,
+    -`BS1.PBMCs...RNA...Material.válido...Envío.Atrys`,
+    -`BS1.PBMCs...RNA...Material.válido...Envío.Atrys...Fecha.de.envío`,
+    -`BS1.PBMCs...RNA...Material.válido...Envío.Atrys...TCR`,
+    -`BS1.PBMCs...RNA...Material.válido...Envío.Leitat`,
+    -`BS1.PBMCs...RNA...Material.válido...Envío.Leitat...Librería.B`,
+    -BS1.PBMCs...DNA,
+    -`BS1.PBMCs...DNA...Fecha.de.extracción`,
+    -`BS1.PBMCs...DNA...Material.válido`,
+    -`BS1.PBMCs...DNA...Material.válido...Envío.Atrys`,
+    -`BS1.PBMCs...DNA...Material.válido...Envío.Atrys...Fecha.de.envío`,
+    -`BS1.PBMCs...DNA...Material.válido...Envío.Atrys...SNPs`,
+    -BS2,
+    -`BS2.Fecha.2ª.extracción`,
+    -`BS2.Fecha.recepción.al.laboratorio`,
+    -BS2.Procesamiento,
+    -BS2.Plasma,
+    -`BS2.Plasma...Citoquinas`,
+    -`BS2.Plasma...Extracción.cfDNA`,
+    -`BS2.Plasma...Extracción.cfDNA...NGS`,
+    -BS2.PBMCs,
+    -`BS2.PBMCs...Número.de.viales.de.PBMCs`,
+    -`BS2.PBMCs...Citometría.de.flujo`,
+    -`BS2.PBMCs...Citometría.de.flujo...Inclusión.en.estadística`,
+    -BS2.PBMCs...RNA,
+    -`BS2.PBMCs...RNA...Fecha.de.extracción`,
+    -`BS2.PBMCs...RNA...Material.válido`,
+    -`BS2.PBMCs...RNA...Material.válido...Envío.Atrys`,
+    -`BS2.PBMCs...RNA...Material.válido...Envío.Atrys...Fecha.de.envío`,
+    -`BS2.PBMCs...RNA...Material.válido...Envío.Atrys...TCR`,
+    -`BS2.PBMCs...RNA...Material.válido...Envío.Leitat`,
+    -`BS2.PBMCs...RNA...Material.válido...Envío.Leitat...Librería.B`,
+    -BS2.PBMCs...DNA,
+    -`BS2.PBMCs...DNA...Fecha.de.extracción`,
+    -`BS2.PBMCs...DNA...Material.válido`,
+    -`BS2.PBMCs...DNA...Material.válido...Envío.Atrys`,
+    -`BS2.PBMCs...DNA...Material.válido...Envío.Atrys...Fecha.de.envío`,
+    -`BS2.PBMCs...DNA...Material.válido...Envío.Atrys...SNPs`,
+    -BS3,
+    -`BS3.Fecha.3ª.extracción`,
+    -BS3.Evento,
+    -`BS3.Fecha.recepción.al.laboratorio`,
+    -BS3.Procesamiento,
+    -BS3.Plasma,
+    -`BS3.Plasma...Citoquinas`,
+    -`BS3.Plasma...Extracción.cfDNA`,
+    -`BS3.Plasma...Extracción.cfDNA...NGS`,
+    -BS3.PBMCs,
+    -`BS3.PBMCs...Número.de.viales.de.PBMCs`,
+    -`BS3.PBMCs...Citometría.de.flujo`,
+    -`BS3.PBMCs...Citometría.de.flujo...Inclusión.en.estadística`,
+    -BS3.PBMCs...RNA,
+    -`BS3.PBMCs...RNA...Fecha.de.extracción`,
+    -`BS3.PBMCs...RNA...Material.válido`,
+    -`BS3.PBMCs...RNA...Material.válido...Envío.Atrys`,
+    -`BS3.PBMCs...RNA...Material.válido...Envío.Atrys...Fecha.de.envío`,
+    -`BS3.PBMCs...RNA...Material.válido...Envío.Atrys...TCR`,
+    -`BS3.PBMCs...RNA...Material.válido...Envío.Leitat`,
+    -`BS3.PBMCs...RNA...Material.válido...Envío.Leitat...Librería.B`,
+    -`BS3.PBMCs...DNA`,
+    -`BS3.PBMCs...DNA...Fecha.de.extracción`,
+    -`BS3.PBMCs...DNA...Material.válido`,
+    -`BS3.PBMCs...DNA...Material.válido...Envío.Atrys`,
+    -`BS3.PBMCs...DNA...Material.válido...Envío.Atrys...Fecha.de.envío`,
+    -`BS3.PBMCs...DNA...Material.válido...Envío.Atrys...SNPs`,
+    -`BS1.BS2.BS3`,
+    -`BS1+BS2+BS3`,
+    -`BS1+BS3`,
+    -`BS2+BS3`,
+    -Código.Inmunosight,
+    -Edad.ultima.actualizacion
+  )
+
+
+```
+
+
+# Introducción de la columna Paciente.code
+
+```{r}
+# Definimos el vector:
+map <- c("01"="PH", "02"="LE", "03"="SO", "04"="FA",
+         "05"="IL", "06"="PC", "07"="CG", "08"="SL",
+         "09"="LA", "10"="X",  "11"="HB", "12"="UC",
+         "13"="UA")
+
+# Invertimos el map para buscar por valor:
+inv_map <- setNames(names(map), map)
+#   inv_map["PH"] == "01", inv_map["LE"] == "02", etc.
+
+# 2. Extraemos los componentes de la columna Paciente
+#    a) Prefijo (antes del primer "-")
+prefijo <- sub("-.*", "", clinic_full_data$Paciente)
+
+#    b) Código numérico (entre el primer y segundo "-")
+codigo  <- sub("^[^-]+-([0-9]+)-.*$", "\\1", clinic_full_data$Paciente)
+
+# 3. Construimos Paciente.code
+clinic_full_data$Paciente.code <- paste0(
+  inv_map[prefijo],  # convierte PH → "01", LE → "02", …
+  "-", 
+  codigo            # deja el "001", "011", …
+)
+
+# 4. Verificamos un par de ejemplos rápidos
+head(clinic_full_data[, c("Paciente", "Paciente.code")])
+
+```
+
+# Exportado de datos clinicos
+
+```{r}
+write.csv(clinic_full_data, file = "/home/agombau/modelo_pipeline/procesed_data/clinic_full_data.csv")
+```
+
+
+# Tabla de resumen EDA
+
+```{r}
+
+# Calcular la tabla de métricas de nearZeroVar para el dataset
+nzv_table <- nearZeroVar(clinic_full_data, saveMetrics = TRUE)
+
+# Extraer la columna 'nzv' (TRUE/FALSE) para cada variable
+near_zero <- sapply(names(clinic_full_data), function(var) {
+  if (var %in% rownames(nzv_table)) {
+    nzv_table[var, "nzv"]
+  } else {
+    NA
+  }
+})
+
+# Crear la tabla resumen sin la columna de Percent_Variance y añadiendo nearZeroVar
+summary_table <- data.frame(
+  Variable = names(clinic_full_data),
+  Type = sapply(clinic_full_data, function(x) paste(class(x), collapse = ", ")),
+  n_obs = sapply(clinic_full_data, length),
+  n_NAs = sapply(clinic_full_data, function(x) sum(is.na(x))),
+  Percent_NAs = sapply(clinic_full_data, function(x) round(mean(is.na(x)) * 100, 2)),
+  Levels = sapply(clinic_full_data, function(x) if (is.factor(x)) paste(levels(x), collapse = "; ") else NA),
+  Factor_Frequencies = sapply(clinic_full_data, function(x) {
+    if (is.factor(x)) {
+      freqs <- table(x, useNA = "ifany")
+      paste(paste(names(freqs), as.vector(freqs), sep = ": "), collapse = "; ")
+    } else {
+      NA
+    }
+  }),
+  nearZeroVar = near_zero,
+  Sample = sapply(clinic_full_data, function(x) paste(head(as.character(x), 3), collapse = "; ")),
+  Min = sapply(clinic_full_data, function(x) if (is.numeric(x)) round(min(x, na.rm = TRUE), 2) else NA),
+  Median = sapply(clinic_full_data, function(x) if (is.numeric(x)) round(median(x, na.rm = TRUE), 2) else NA),
+  Max = sapply(clinic_full_data, function(x) if (is.numeric(x)) round(max(x, na.rm = TRUE), 2) else NA),
+  stringsAsFactors = FALSE
+)
+
+summary_table
+
+```
+
+# Calculo de indices ecolologicos
+
+Procesamos datos de repertorios de receptores TCR utilizando la librería immunarch, organizando las muestras en tres grupos (BS1, BS2 y BS3) según un identificador extraído del nombre de cada archivo. Primero se cargan `todos` los ficheros `.results.tsv` del directorio de trabajo y se filtran en tres listas de acuerdo con su etiqueta BS (1, 2 o 3). A continuación, cada conjunto de archivos se importa con repLoad(), y los nombres de muestra se acortan hasta el tercer bloque (por ejemplo, “01-002-1”) para mantener consistencia en los metadatos.
+
+Una vez preparados los datos, el script calcula varios índices ecológicos para cada grupo: riqueza (Chao1), diversidad de Shannon, índice de Simpson (Gini–Simpson), convergencia de Gini, así como los percentiles D50 y D10. La equidad o “evenness” de Pielou se obtiene dividiendo el valor de Shannon entre el logaritmo de la riqueza estimada. Todos estos valores se ensamblan en un único data.frame por grupo, se limpia la columna de muestras para eliminar sufijos redundantes.
+
+Se recomienda correr el código en el server ya que es bastante pesado y en el equipo local puede dar problemas de memoria.
+
+```{r, eval = FALSE}
+##############################################################################
+####################### INDICES ECOLOGICOS ########################################
+##############################################################################
+
+#### ENTORNO R ####
+# Solo necesitamos immunarch para este análisis
+library(immunarch)
+library(dplyr)
+
+
+# Establecer directorio de trabajo
+# Establecer ruta en local o server en función de si queremos solo testear el codigo con unos archivos el local o bien trabajar con todo el dataset (se recomienda hacerlo en el server)
+target_dir <- "/home/atrys/Documentos/TCR/pruebas"
+setwd(target_dir)
+
+## CARGA DE LOS ARCHIVOS ###
+reads <- list.files(pattern = "*.results.tsv")
+
+# Función auxiliar para extraer el BS a partir del segundo guión
+get_bs <- function(filename) {
+  parts <- strsplit(filename, "-")[[1]]
+  parts[3]
+}
+
+# Filtrar muestras BS1, BS2 y BS3
+bs1_reads <- reads[sapply(reads, get_bs) == "1"]
+bs2_reads <- reads[sapply(reads, get_bs) == "2"]
+bs3_reads <- reads[sapply(reads, get_bs) == "3"]
+
+# Cargar los datos con immunarch
+bs1_data <- repLoad(bs1_reads)
+bs2_data <- repLoad(bs2_reads)
+bs3_data <- repLoad(bs3_reads)
+
+# Función para reducir nombres de muestra (hasta el tercer bloque, ej. 01-002-1)
+reduce_names <- function(obj) {
+  orig <- names(obj$data)
+  reduced <- sub("^(([^-]+-){2}[^-]+).*", "\\1", orig)
+  names(obj$data) <- reduced
+  obj$meta$Sample <- reduced
+  obj
+}
+
+# Aplicar reducción a cada conjunto de datos
+bs1_data <- reduce_names(bs1_data)
+bs2_data <- reduce_names(bs2_data)
+bs3_data <- reduce_names(bs3_data)
+
+
+### RIQUEZA (Chao1) ####
+
+chao1_bs1 <- repDiversity(bs1_data$data, .method = "chao1")
+chao1_bs2 <- repDiversity(bs2_data$data, .method = "chao1")
+chao1_bs3 <- repDiversity(bs3_data$data, .method = "chao1")
+
+
+#### Shanon diversity ###
+shannon_bs1 <- repDiversity(bs1_data$data, .method="div")
+shannon_bs2 <- repDiversity(bs2_data$data, .method="div")
+shannon_bs3 <- repDiversity(bs1_data$data, .method="div")
+
+
+### Diversidad de Simpsom o Gini Simpsom ###
+simp_bs1 <- repDiversity(bs1_data$data, .method = "gini.simp")
+simp_bs2 <- repDiversity(bs2_data$data, .method = "gini.simp")
+simp_bs3 <- repDiversity(bs3_data$data, .method = "gini.simp")
+
+
+
+### Indice de equidad o (eveness) ###
+
+# Como immnuarch no tiene funcion para calcular la equidad o eveness utilizaremos la formula
+# de Pielou
+
+bs1_even <- shannon_bs1[,"Value"] / log(chao1_bs1[, "Estimator"])
+bs2_even <- shannon_bs2[,"Value"] / log(chao1_bs2[, "Estimator"])
+bs3_even <- shannon_bs3[,"Value"] / log(chao1_bs3[, "Estimator"])
+
+
+### Índice de Convergencia (Gini) ###
+convergencia_bs1 <- repDiversity(bs1_data$data, .method = "gini")
+convergencia_bs2 <- repDiversity(bs2_data$data, .method = "gini")
+convergencia_bs3 <- repDiversity(bs3_data$data, .method = "gini")
+
+
+### Indice d50 ###
+d50_bs1 <- repDiversity(bs1_data$data, .method = "d50")
+d50_bs2 <- repDiversity(bs2_data$data, .method = "d50")
+d50_bs3 <- repDiversity(bs3_data$data, .method = "d50")
+
+
+### Indice d10 ###
+d10_bs1 <- repDiversity(bs1_data$data, .method = "dxx", .perc = 9)
+d10_bs2 <- repDiversity(bs2_data$data, .method = "dxx", .perc = 9)
+d10_bs3 <- repDiversity(bs3_data$data, .method = "dxx", .perc = 9)
+
+
+
+# ----------------------------
+# BS1 eco index
+# ----------------------------
+
+chao1_vals_bs1    <- chao1_bs1[, 1]
+shannon_vals_bs1  <- shannon_bs1[, 2]
+simp_vals_bs1     <- simp_bs1[, 2]
+even_vals_bs1     <- bs1_even           # sigue siendo un vector
+conv_vals_bs1     <- convergencia_bs1[, 1]
+d50_vals_bs1      <- d50_bs1[, 1]
+d10_vals_bs1      <- d10_bs1[, 1]
+
+# Crear data.frame unificado
+bs1_eco_index <- data.frame(
+  Sample           = rownames(chao1_bs1),
+  Chao1_bs1            = chao1_vals_bs1,
+  Shannon_bs1          = shannon_vals_bs1,
+  Simpson_GiniSimp_bs1 = simp_vals_bs1,
+  Pielou_Evenness_bs1  = even_vals_bs1,
+  Gini_Convergence_bs1 = conv_vals_bs1,
+  D50_bs1              = d50_vals_bs1,
+  D10_bs1              = d10_vals_bs1,
+  stringsAsFactors = FALSE
+)
+
+# Quitar el sufijo tras el segundo guion en Sample
+bs1_eco_index$Sample <- sub("-[^-]+$", "", bs1_eco_index$Sample)
+# Quitar las filas de nombres duplicados
+rownames(bs1_eco_index) <- NULL
+
+write.csv(bs1_eco_index, file = "bs1_eco_index.csv", row.names = FALSE)
+
+
+# ----------------------------
+# BS2 eco index
+# ----------------------------
+
+# Extraer vectores de la primera/segunda columna según corresponda
+chao1_vals_bs2    <- chao1_bs2[, 1]
+shannon_vals_bs2  <- shannon_bs2[, 2]
+simp_vals_bs2     <- simp_bs2[, 2]
+even_vals_bs2     <- bs2_even           # vector de Pielou para BS2
+conv_vals_bs2     <- convergencia_bs2[, 1]
+d50_vals_bs2      <- d50_bs2[, 1]
+d10_vals_bs2      <- d10_bs2[, 1]
+
+# Crear data.frame unificado
+bs2_eco_index <- data.frame(
+  Sample           = rownames(chao1_bs2),
+  Chao1_bs2            = chao1_vals_bs2,
+  Shannon_bs2          = shannon_vals_bs2,
+  Simpson_GiniSimp_bs2 = simp_vals_bs2,
+  Pielou_Evenness_bs2  = even_vals_bs2,
+  Gini_Convergence_bs2 = conv_vals_bs2,
+  D50_bs2              = d50_vals_bs2,
+  D10_bs2              = d10_vals_bs2,
+  stringsAsFactors = FALSE
+)
+
+# Limpiar la columna Sample (quitar lo posterior al segundo guion)
+bs2_eco_index$Sample <- sub("-[^-]+$", "", bs2_eco_index$Sample)
+
+# Eliminar los rownames para que no se muestren duplicados
+rownames(bs2_eco_index) <- NULL
+
+write.csv(bs2_eco_index, file = "bs2_eco_index.csv", row.names = FALSE)
+
+
+
+# ----------------------------
+# BS3 eco index
+# ----------------------------
+
+# Extraer vectores de la primera/segunda columna según corresponda
+chao1_vals_bs3    <- chao1_bs3[, 1]
+shannon_vals_bs3  <- shannon_bs3[, 2]
+simp_vals_bs3     <- simp_bs3[, 2]
+even_vals_bs3     <- bs3_even           # vector de Pielou para BS3
+conv_vals_bs3     <- convergencia_bs3[, 1]
+d50_vals_bs3      <- d50_bs3[, 1]
+d10_vals_bs3      <- d10_bs3[, 1]
+
+# Crear data.frame unificado
+bs3_eco_index <- data.frame(
+  Sample           = rownames(chao1_bs3),
+  chao1_bs3            = chao1_vals_bs3,
+  Shannon_bs3          = shannon_vals_bs3,
+  Simpson_GiniSimp_bs3 = simp_vals_bs3,
+  Pielou_Evenness_bs3  = even_vals_bs3,
+  Gini_Convergence_bs3 = conv_vals_bs3,
+  D50_bs3              = d50_vals_bs3,
+  D10_bs3              = d10_vals_bs3,
+  stringsAsFactors = FALSE
+)
+
+# Limpiar la columna Sample (quitar lo posterior al segundo guion)
+bs3_eco_index$Sample <- sub("-[^-]+$", "", bs3_eco_index$Sample)
+
+# Eliminar los rownames para que no se muestren duplicados
+rownames(bs3_eco_index) <- NULL
+
+# Exportar a CSV (opcional)
+write.csv(bs3_eco_index, file = "bs3_eco_index.csv", row.names = FALSE)
+
+```
+
+# Datos de TCR
+
+Este script en R está diseñado para generar una tabla única con los usos relativos de los genes TCR V y J en cada muestra, agrupadas en tres conjuntos (BS1, BS2 y BS3). Al igual que en el anterior, primero se cargan todos los ficheros .`results.tsv` del directorio de trabajo y se filtran según su etiqueta BS mediante la función get_bs(). Cada grupo de archivos se importa con repLoad() y sus nombres de muestra se reducen al tercer bloque (XX-YYY-Z) usando reduce_names() para mantener consistencia.
+
+A continuación, para cada grupo BS se calcula el uso relativo normalizado de los genes hs.trbv (V) y hs.trbj (J) con geneUsage(..., .norm = TRUE), rellenando valores NA con ceros. Cada resultado se transpone y se renombran las columnas para incluir el sufijo del grupo (-bs1, -bs2, -bs3) mediante transpose_and_suffix(). Por último, se fusionan todos los data.frames transpuestos en uno solo con Reduce(full_join), y se añade una columna Patient que extrae el identificador común a todas las réplicas de una misma muestra (eliminando el sufijo -1, -2 o -3). El resultado es una tabla definitiva donde cada fila corresponde a una réplica de un paciente y contiene, de forma organizada, los porcentajes de uso de cada gen V y J.
+
+```{r, eval = FALSE}
+##############################################################################
+####################### TABLA DE TCRs ########################################
+##############################################################################
+
+#### ENTORNO R ####
+# Solo necesitamos immunarch para este análisis
+library(immunarch)
+library(dplyr)
+
+
+# Establecer directorio de trabajo
+# Establecer ruta en local o server en función de si queremos solo testear el codigo con unos archivos el local o bien trabajar con todo el dataset (se recomienda hacerlo en el server)
+target_dir <- "/home/atrys/Documentos/TCR/pruebas"
+setwd(target_dir)
+
+## CARGA DE LOS ARCHIVOS ###
+reads <- list.files(pattern = "*.results.tsv")
+
+# Función auxiliar para extraer el BS a partir del segundo guión
+get_bs <- function(filename) {
+  parts <- strsplit(filename, "-")[[1]]
+  parts[3]
+}
+
+# Filtrar muestras BS1, BS2 y BS3
+bs1_reads <- reads[sapply(reads, get_bs) == "1"]
+bs2_reads <- reads[sapply(reads, get_bs) == "2"]
+bs3_reads <- reads[sapply(reads, get_bs) == "3"]
+
+# Cargar los datos con immunarch
+bs1_data <- repLoad(bs1_reads)
+bs2_data <- repLoad(bs2_reads)
+bs3_data <- repLoad(bs3_reads)
+
+# Función para reducir nombres de muestra (hasta el tercer bloque, ej. 01-002-1)
+reduce_names <- function(obj) {
+  orig <- names(obj$data)
+  reduced <- sub("^(([^-]+-){2}[^-]+).*", "\\1", orig)
+  names(obj$data) <- reduced
+  obj$meta$Sample <- reduced
+  obj
+}
+
+# Aplicar reducción a cada conjunto de datos
+bs1_data <- reduce_names(bs1_data)
+bs2_data <- reduce_names(bs2_data)
+bs3_data <- reduce_names(bs3_data)
+
+### USO RELATIVO DE TCRs ###
+get_rel <- function(data_obj, gene) {
+  df <- geneUsage(data_obj$data, .gene = gene, .norm = TRUE)
+  df[is.na(df)] <- 0
+  df
+}
+bs1_TCR_v_rel <- get_rel(bs1_data, "hs.trbv")
+bs1_TCR_j_rel <- get_rel(bs1_data, "hs.trbj")
+bs2_TCR_v_rel <- get_rel(bs2_data, "hs.trbv")
+bs2_TCR_j_rel <- get_rel(bs2_data, "hs.trbj")
+bs3_TCR_v_rel <- get_rel(bs3_data, "hs.trbv")
+bs3_TCR_j_rel <- get_rel(bs3_data, "hs.trbj")
+
+# Función para transponer y añadir sufijo de BS a cada gen, manejando tibbles
+transpose_and_suffix <- function(df, bs_label) {
+  genes <- df[[1]]
+  mat <- as.matrix(df[,-1])
+  rownames(mat) <- genes
+  mat_t <- t(mat)
+  colnames(mat_t) <- paste0(colnames(mat_t), "-", bs_label)
+  out <- as.data.frame(mat_t, stringsAsFactors = FALSE)
+  out$Sample <- rownames(mat_t)
+  rownames(out) <- NULL
+  out[, c("Sample", setdiff(names(out), "Sample"))]
+}
+
+# Aplicar función a cada data frame de uso relativo con nombre correcto
+bs1_TCR_v_rel_t <- transpose_and_suffix(bs1_TCR_v_rel, "bs1")
+bs1_TCR_j_rel_t <- transpose_and_suffix(bs1_TCR_j_rel, "bs1")
+bs2_TCR_v_rel_t <- transpose_and_suffix(bs2_TCR_v_rel, "bs2")
+bs2_TCR_j_rel_t <- transpose_and_suffix(bs2_TCR_j_rel, "bs2")
+bs3_TCR_v_rel_t <- transpose_and_suffix(bs3_TCR_v_rel, "bs3")
+bs3_TCR_j_rel_t <- transpose_and_suffix(bs3_TCR_j_rel, "bs3")
+
+### CREAR DATOS DEFINITIVOS POR PACIENTE ###
+# Unir todos los data frames con Reduce (base R)
+all_tcr <- Reduce(function(x, y) full_join(x, y, by = "Sample"),
+                  list(
+                    bs1_TCR_v_rel_t, bs1_TCR_j_rel_t,
+                    bs2_TCR_v_rel_t, bs2_TCR_j_rel_t,
+                    bs3_TCR_v_rel_t, bs3_TCR_j_rel_t
+                  ))
+
+# Extraer identificador de paciente (quita el sufijo -1/-2/-3)
+all_tcr <- all_tcr %>%
+  mutate(Patient = sub("-[123]$", "", Sample)) %>%
+  select(Patient, Sample, everything())
+
+
+```
+
+
+# Data merge
+
+```{r}
+###############################################################################
+################################## DATA MERGE #################################
+###############################################################################
+
+# 0) Cargamos los archivos CSV
+clinic_full_data <- read.csv(
+  "/home/agombau/modelo_pipeline/procesed_data/clinic_full_data.csv",
+  stringsAsFactors = FALSE
+)
+
+# 1) TCR relativos y absolutos (quitamos la primera columna de índices)
+all_tcr_rel <- read.csv(
+  "/home/agombau/modelo_pipeline/procesed_data/all_tcr_rel.csv",
+  stringsAsFactors = FALSE
+)[, -1]
+all_tcr_abs <- read.csv(
+  "/home/agombau/modelo_pipeline/procesed_data/all_tcr_abs.csv",
+  stringsAsFactors = FALSE
+)[, -1]
+
+# 2) Estandarizamos la columna de muestra como "Sample"
+names(all_tcr_abs)[1] <- "Sample"
+
+# 3) Cargamos los índices ecológicos de bs1, bs2 y bs3
+bs1_eco_index <- read.csv(
+  "/home/agombau/modelo_pipeline/procesed_data/bs1_eco_index.csv",
+  stringsAsFactors = FALSE
+)
+bs2_eco_index <- read.csv(
+  "/home/agombau/modelo_pipeline/procesed_data/bs2_eco_index.csv",
+  stringsAsFactors = FALSE
+)
+bs3_eco_index <- read.csv(
+  "/home/agombau/modelo_pipeline/procesed_data/bs3_eco_index.csv",
+  stringsAsFactors = FALSE
+)
+
+# 4) Convertimos a character los campos que usaremos para merge
+clinic_full_data$Paciente.code <- as.character(clinic_full_data$Paciente.code)
+all_tcr_rel$Sample            <- as.character(all_tcr_rel$Sample)
+all_tcr_abs$Sample            <- as.character(all_tcr_abs$Sample)
+bs1_eco_index$Sample          <- as.character(bs1_eco_index$Sample)
+bs2_eco_index$Sample          <- as.character(bs2_eco_index$Sample)
+bs3_eco_index$Sample          <- as.character(bs3_eco_index$Sample)
+
+# 5) Función para extraer y renombrar TCR por batch (bs1, bs2, bs3) y tipo (rel o abs)
+extract_tcr <- function(df, type, bs) {
+  pat      <- paste0("-", bs, "$")
+  sel_rows <- grepl(pat, df$Sample)
+  cols     <- grep(paste0("\\.bs", bs, "$"), names(df), value = TRUE)
+  sub_df   <- df[sel_rows, c("Sample", cols), drop = FALSE]
+  sub_df$Paciente.code <- sub("^(.+)-\\d$", "\\1", sub_df$Sample)
+  new_names <- gsub(
+    paste0("\\.bs", bs, "$"),
+    paste0("_bs", bs, "_", type),
+    cols
+  )
+  names(sub_df)[match(cols, names(sub_df))] <- new_names
+  sub_df$Sample <- NULL
+  sub_df <- sub_df[, c("Paciente.code", new_names), drop = FALSE]
+  return(sub_df)
+}
+
+# 6) Extraemos todos los subconjuntos de TCR (bs1, bs2, bs3; rel y abs)
+tcr_list <- list()
+for (bs in 1:3) {
+  tcr_list[[paste0("bs", bs, "_rel")]] <- extract_tcr(all_tcr_rel, "rel", bs)
+  tcr_list[[paste0("bs", bs, "_abs")]] <- extract_tcr(all_tcr_abs, "abs", bs)
+}
+
+# 7) Merge secuencial con datos clínicos usando LEFT JOIN
+merged_full <- clinic_full_data
+for (df in tcr_list) {
+  merged_full <- merge(
+    x     = merged_full,
+    y     = df,
+    by    = "Paciente.code",
+    all.x = TRUE
+  )
+}
+
+# 8) Función para preparar índices ecológicos (añadir sufijo _bs{n}_eco)
+prep_eco <- function(eco_df, bs) {
+  names(eco_df)[names(eco_df) == "Sample"] <- "Paciente.code"
+  cols_to_rename <- setdiff(names(eco_df), "Paciente.code")
+  names(eco_df)[names(eco_df) %in% cols_to_rename] <-
+    paste0(cols_to_rename, "_bs", bs, "_eco")
+  return(eco_df)
+}
+
+# 9) Preparamos y añadimos índices ecológicos con LEFT JOIN
+bs1_eco <- prep_eco(bs1_eco_index, 1)
+bs2_eco <- prep_eco(bs2_eco_index, 2)
+bs3_eco <- prep_eco(bs3_eco_index, 3)
+
+merged_full <- merge(merged_full, bs1_eco, by = "Paciente.code", all.x = TRUE)
+merged_full <- merge(merged_full, bs2_eco, by = "Paciente.code", all.x = TRUE)
+merged_full <- merge(merged_full, bs3_eco, by = "Paciente.code", all.x = TRUE)
+
+
+# 10b) Filtrar pacientes sin ningún dato de bs1
+library(dplyr)
+merged_full <- merged_full %>%
+  filter(
+    if_any(
+      matches("_bs1_(rel|abs)$"),
+      ~ !is.na(.)
+    )
+  )
+
+# 12) Guardamos el resultado
+write.csv(
+  merged_full,
+  file = "/home/agombau/modelo_pipeline/procesed_data/merged_full.csv",
+  row.names = FALSE
+)
+
+```
+
+# Imputación de valores faltantes
+
+```{r}
+# Importamos los datos teniendo en cuenta las clases (factores, fechas, y numero)
+# Leer todo como character
+merged_full <- read_csv(
+  "/home/agombau/modelo_pipeline/procesed_data/merged_full.csv",
+  col_types = cols(.default = "c")
+)
+
+# Auto-detectar numéricas y fechas
+merged_full <- type_convert(merged_full)
+
+# Convertir todas las columnas character en factors
+merged_full <- merged_full %>%
+  mutate(across(where(is.character), as.factor))
+
+```
+
+## Resumen de missingness y clases de variable
+
+Creamos un dataframe con el nonbre de variable y su clase
+
+```{r}
+var_info <- data.frame(
+  variable = names(merged_full),
+  clase    = sapply(merged_full, class),
+  stringsAsFactors = FALSE
+)
+```
+
+Calculamos el numero de missing y el % de missing por variable
+
+```{r}
+missing_info <- merged_full %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(
+    cols        = everything(),
+    names_to    = "variable",
+    values_to   = "n_missing"
+  ) %>%
+  mutate(pct_missing = n_missing / nrow(merged_full) * 100)
+```
+
+Unimos la información de clase y el missing y ordenamos de mayor a menor % de missing
+
+```{r}
+tabla_exploratoria <- var_info %>%
+  left_join(missing_info, by = "variable") %>%
+  arrange(desc(pct_missing))
+```
+
+Resultado:
+
+```{r}
+tabla_exploratoria
+```
+
+## Estadísticos de variables numéricas
+
+```{r}
+head(skim(merged_full))
+```
+
+## Frecuencias de variables categóricas
+
+```{r}
+# Seleccionar variables factor o character
+cat_vars <- merged_full %>% select(where(~ is.factor(.) || is.character(.)))
+
+# Para cada variable categórica, tabla de frecuencias (incluye NA)
+freq_list <- lapply(cat_vars, function(x) {
+  as.data.frame(table(x, useNA = "ifany"))
+})
+freq_list
+```
+
+# Eliminación previa de missing values
+
+Antes de realizar la imputación de los missing values probamos a eliminar todos los registros con NAs y calcular el numero de pacientes final.
+
+```{r}
+# 1) Número de filas (pacientes) antes de limpiar
+n_before <- nrow(merged_full)
+
+# 2) Eliminamos filas con cualquier NA
+merged_clean <- na.omit(merged_full)
+
+# 3) Número de filas tras limpieza
+n_after <- nrow(merged_clean)
+
+# 4) Cálculo de cuántas filas se han eliminado
+n_removed <- n_before - n_after
+
+# 5) Cálculo del porcentaje eliminado
+pct_removed <- n_removed / n_before * 100
+
+# 6) Mostramos los resultados
+cat("Pacientes antes de limpiar: ", n_before, "\n")
+cat("Pacientes tras limpiar:    ", n_after, "\n")
+cat("Pacientes eliminados:      ", n_removed, "\n")
+cat(sprintf("Porcentaje eliminados:     %.2f%%\n", pct_removed))
+
+```
+
+```{r, }
+# 1) Filas "eliminadas": las que NO son complete.cases()
+rows_removed <- merged_full[!complete.cases(merged_full), ]
+
+# 2) Contar NAs por fila
+na_count <- apply(rows_removed, 1, function(x) sum(is.na(x)))
+
+# 3) Media de NAs por fila eliminada
+mean_na <- mean(na_count)
+cat(sprintf("Media de NAs por fila eliminada: %.2f\n", mean_na))
+
+# 4) Boxplot + Histograma juntos
+par(mfrow = c(1, 2))           # 1 fila, 2 columnas
+boxplot(na_count,
+        main = "Boxplot: NAs por fila",
+        ylab = "Número de NAs")
+hist(na_count,
+     main = "Histograma: NAs por fila",
+     xlab = "Número de NAs",
+     breaks = seq(0, max(na_count)+1, by = 1))
+# (Opcional) Restaurar parámetros gráficos por defecto
+par(mfrow = c(1, 1))
+
+```
+
+### Eliminación de Exitus
+
+Descartamos la variable `Exitus` antes de la construcción de modelo ya que representa un **data leakage** al estar obviamente relacionada con la progresión.
+
+```{r}
+# Correlación implícita: TRUE→1, FALSE→0
+cor(
+  merged_full$Progresión == "Sí",
+  merged_full$Exitus      == "Sí",
+  use = "complete.obs"
+)
+```
+
+```{r eval=FALSE, include=FALSE}
+# Eliminación de Exitus
+merged_full$Exitus <- NULL
+```
+
+## Imputación de missing values
+
+#### Histología
+
+```{r}
+# Conteos absolutos y relativos de Histología
+tab <- table(merged_full$Histología, useNA = "ifany")
+pct <- prop.table(tab) * 100
+data.frame(
+  nivel = names(tab),
+  conteo = as.vector(tab),
+  pct = round(as.vector(pct), 2)
+)
+
+```
+
+Los NAs serán imputados a una clase nueva llamada "Desconocido".
+
+```{r}
+merged_full <- merged_full %>%
+  mutate(
+    Histología = as.factor(Histología),                             # asegurar factor
+    Histología = fct_explicit_na(Histología, na_level = "Desconocido")  # NA → “Desconocido”
+  )
+
+# Verifica
+merged_full %>% 
+  count(Histología) %>% 
+  mutate(pct = round(n/sum(n)*100,2))
+```
+
+### Tipo.de.IO.Cat..0.IO..1.ChIO.
+
+```{r}
+# Frecuencias y % de missing de Tipo.de.IO.Cat..0.IO..1.ChIO.
+tab_io <- table(merged_full$Tipo.de.IO.Cat..0.IO..1.ChIO., useNA = "ifany")
+pct_io <- prop.table(tab_io) * 100
+data.frame(
+  nivel  = names(tab_io),
+  conteo = as.vector(tab_io),
+  pct    = round(as.vector(pct_io), 2)
+)
+
+```
+
+De nuevo, consideramos los NAs como una nueva clase llamada `Desconocido`:
+
+```{r}
+merged_full <- merged_full %>%
+  mutate(
+    Tipo.de.IO.Cat..0.IO..1.ChIO. = as.factor(Tipo.de.IO.Cat..0.IO..1.ChIO.),        # renombra para código legible
+    Tipo.de.IO.Cat..0.IO..1.ChIO. = fct_explicit_na(Tipo.de.IO.Cat..0.IO..1.ChIO., na_level = "Desconocido")
+  )
+
+# Verifica frecuencias
+merged_full %>%
+  count(Tipo.de.IO.Cat..0.IO..1.ChIO.) %>%
+  mutate(pct = round(n / sum(n) * 100, 2))
+```
+
+### Tiempo.hasta.inicio.IO.metas
+
+```{r}
+# Conteo de NA y % missing
+n_missing <- sum(is.na(merged_full$Tiempo.hasta.inicio.IO.metas))
+pct_missing <- n_missing / nrow(merged_full) * 100
+
+# Estadísticos básicos
+stats <- summary(merged_full$Tiempo.hasta.inicio.IO.metas)
+
+# Imprime todo junto
+list(
+  n_missing   = n_missing,
+  pct_missing = round(pct_missing, 2),
+  stats       = stats
+)
+
+```
+
+Para Tiempo.hasta.inicio.IO.metas, con un 5.7 % de missing y una distribución muy sesgada (media 229 vs mediana 43, con un outlier en 3116), lo más sencillo y robusto es imputar por la mediana.
+
+```{r eval=FALSE, include=FALSE}
+
+# Calcular mediana ignorando los NA
+mediana_tiempo <- median(merged_full$Tiempo.hasta.inicio.IO.metas, na.rm = TRUE)
+
+# Imputar NA por la mediana
+merged_full <- merged_full %>%
+  mutate(
+    Tiempo.hasta.inicio.IO.metas = if_else(
+      is.na(Tiempo.hasta.inicio.IO.metas),
+      mediana_tiempo,
+      Tiempo.hasta.inicio.IO.metas
+    )
+  )
+
+# Comprobar que ya no hay NA y ver rango tras imputación
+summary(merged_full$Tiempo.hasta.inicio.IO.metas)
+sum(is.na(merged_full$Tiempo.hasta.inicio.IO.metas))
+
+```
+
+### PD.L1
+
+```{r}
+summary(merged_full$PD.L1)
+```
+
+```{r}
+# 1) Número y % de NA en PD.L1
+n_missing_pd <- sum(is.na(merged_full$PD.L1))
+pct_missing_pd <- round(n_missing_pd / nrow(merged_full) * 100, 2)
+
+# 2) Estadísticos básicos de PD.L1
+stats_pd <- summary(merged_full$PD.L1)
+
+# 3) Mostrar todo junto
+list(
+  n_missing   = n_missing_pd,
+  pct_missing = pct_missing_pd,
+  stats       = stats_pd
+)
+
+```
+
+La imputación múltiple mediante MICE (Multiple Imputation by Chained Equations) es una técnica avanzada que genera varias estimaciones plausibles para cada dato faltante, basándose en modelos iterativos que aprovechan la información de todas las variables disponibles. En cada “cadena” de ecuaciones, se ajusta un modelo de predicción para una variable con valores perdidos (aquí, PD.L1) usando como covariables las restantes (estadio al diagnóstico, histología, edad, ECOG, tumor previo), se imputan sus valores faltantes, y a continuación se procede con la siguiente variable con NA. Este proceso se repite hasta converger, produciendo m conjuntos completos de datos que reflejan la incertidumbre inherente al relleno.
+
+Elegimos en concreto Predictive Mean Matching (PMM) dentro de MICE porque garantiza que los valores imputados de PD.L1 sean siempre observaciones reales tomadas del conjunto original (evitando valores fuera de rango o suavizados artificialmente) y conserva la asimetría y cola larga de su distribución. Al generar varias imputaciones y luego combinar resultados, este enfoque reduce el sesgo que introduciría una imputación única (como la mediana global) y mejora la validez estadística de análisis posteriores, asegurando que los pocos NAs de PD.L1 se rellenen de manera coherente con las relaciones multivariables de nuestro cohort.
+
+```{r}
+library(mice)
+
+# 1) Seleccionamos sólo las variables necesarias para la imputación
+vars_imp <- c(
+  "PD.L1",
+  "Estadio.al.diagnóstico",
+  "Histología",
+  "Edad.al.diagnóstico",
+  "Escala.ECOG",
+  "Tumor.previo"
+)
+
+# 2) Creamos el mids object, imputando PD.L1 con PMM
+imp <- mice(
+  merged_full[ , vars_imp],
+  method = "pmm",
+  m      = 5,
+  seed   = 123
+)
+
+# 3) Extraemos uno de los datasets completos (aquí el primero)
+imp_complete <- complete(imp, 1)
+
+# 4) Sobrescribimos sólo los NA de PD.L1 en el data.frame original
+na_idx <- is.na(merged_full$PD.L1)
+merged_full$PD.L1[na_idx] <- imp_complete$PD.L1[na_idx]
+
+# 5) Verificación: ya no hay NA en PD.L1
+sum(is.na(merged_full$PD.L1))  # debe dar 0
+
+```
+
+```{r}
+# 1) Número y % de NA en PD.L1
+n_missing_pd <- sum(is.na(merged_full$PD.L1))
+pct_missing_pd <- round(n_missing_pd / nrow(merged_full) * 100, 2)
+
+# 2) Estadísticos básicos de PD.L1
+stats_pd <- summary(merged_full$PD.L1)
+
+# 3) Mostrar todo junto
+list(
+  n_missing   = n_missing_pd,
+  pct_missing = pct_missing_pd,
+  stats       = stats_pd
+)
+```
+
+### Fecha.de.diagnóstico.de.enfermedad.metastática
+
+```{r}
+# Número y % de NA
+n_miss <- sum(is.na(merged_full$Fecha.de.diagnóstico.de.enfermedad.metastática))
+pct_miss <- round(n_miss / nrow(merged_full) * 100, 2)
+
+# Rango y “fecha central”
+fechas <- merged_full$Fecha.de.diagnóstico.de.enfermedad.metastática
+fecha_min <- min(fechas, na.rm = TRUE)
+fecha_max <- max(fechas, na.rm = TRUE)
+fecha_med <- median(fechas, na.rm = TRUE)
+
+list(
+  n_missing   = n_miss,
+  pct_missing = pct_miss,
+  fecha_min   = fecha_min,
+  fecha_med   = fecha_med,
+  fecha_max   = fecha_max
+)
+```
+
+Imputamos la fecha de diagnóstico de enfermedad metastásica —que presenta un 4,8 % de valores faltantes— de la siguiente manera: primero creamos un indicador binario (Metastasis_no_diag) que marca con TRUE los casos en que no hay fecha (es decir, nunca se diagnosticó metástasis o no se registró), preservando así esa información clínica. A continuación, rellenamos los NA con la mediana de las fechas observadas (20 de mayo de 2021), un valor real dentro del rango (desde el 1 de julio de 2013 hasta el 6 de julio de 2023) que evita sesgar la distribución hacia extremos tempranos o tardíos y permite al modelo tratar homogéneamente todas las observaciones.
+
+```{r}
+
+# 1) Fecha mediana ya calculada: 
+fecha_mediana <- as_date("2021-05-20")
+
+merged_full <- merged_full %>%
+  # 2) Indicador de no metastásico
+  mutate(
+    Metastasis_no_diag = is.na(Fecha.de.diagnóstico.de.enfermedad.metastática),
+    # 3) Imputar NA con la mediana
+    Fecha.de.diagnóstico.de.enfermedad.metastática = 
+      if_else(
+        Metastasis_no_diag,
+        fecha_mediana,
+        Fecha.de.diagnóstico.de.enfermedad.metastática
+      )
+  )
+
+# Verificación
+merged_full %>%
+  summarize(
+    n_na    = sum(is.na(Fecha.de.diagnóstico.de.enfermedad.metastática)),
+    n_other = sum(Metastasis_no_diag),
+    min     = min(Fecha.de.diagnóstico.de.enfermedad.metastática),
+    median  = median(Fecha.de.diagnóstico.de.enfermedad.metastática),
+    max     = max(Fecha.de.diagnóstico.de.enfermedad.metastática)
+  )
+
+```
+
+### Tiempo.hasta.inicio.IO
+
+```{r}
+# 1) Número y % de NA en Tiempo.hasta.inicio.IO
+n_missing_ti <- sum(is.na(merged_full$Tiempo.hasta.inicio.IO))
+pct_missing_ti <- round(n_missing_ti / nrow(merged_full) * 100, 2)
+
+# 2) Estadísticos básicos
+stats_ti <- summary(merged_full$Tiempo.hasta.inicio.IO)
+
+# 3) Mostrar todo junto
+list(
+  n_missing   = n_missing_ti,
+  pct_missing = pct_missing_ti,
+  stats       = stats_ti
+)
+
+```
+
+Imputamos los 9 valores faltantes de la variable Tiempo.hasta.inicio.IO (3,95 % de la muestra) usando la mediana de la distribución (78 días), de modo que cada NA se reemplaza por este valor central resistente a outliers y se mantiene la coherencia numérica de la variable para el modelado.
+
+```{r}
+# Calcular la mediana ignorando los NA
+mediana_tiempoIO <- median(merged_full$Tiempo.hasta.inicio.IO, na.rm = TRUE)
+
+# Imputar directamente los NA por la mediana
+merged_full$Tiempo.hasta.inicio.IO[is.na(merged_full$Tiempo.hasta.inicio.IO)] <- mediana_tiempoIO
+
+# Verificación
+summary(merged_full$Tiempo.hasta.inicio.IO)
+sum(is.na(merged_full$Tiempo.hasta.inicio.IO))
+
+```
+### Follow.Up.(d)
+
+```{r}
+# 1) Número y % de NA en Follow up
+n_missing_fu <- sum(is.na(merged_full$Follow.Up..d.))
+pct_missing_fu <- round(n_missing_fu / nrow(merged_full) * 100, 2)
+
+# 2) Estadísticos básicos
+stats_fu <- summary(merged_full$Follow.Up..d.)
+
+# 3) Mostrar resultados
+list(
+  n_missing   = n_missing_fu,
+  pct_missing = pct_missing_fu,
+  stats       = stats_fu
+)
+```
+
+Debido a que esta variable se va a utilizar en las curvas Kaplan - Meier, donde la imputación puede ser problemática debido a que el dato de Follow up es clave, vamos a dejar los `NA` y eliminar posteriormente esos registros. En caso de que no queramos eliminar esos registros, imputamos los 8 valores faltantes de Follow.Up..d. (3,51 % de la muestra) por la mediana de la variable (350 días), de manera que cada NA se reemplaza por este valor central resistente a los outliers y se preserva la coherencia del rango de días de seguimiento para el modelado.
+
+
+```{r eval=FALSE, include=FALSE}
+# Calcular mediana sin NA
+mediana_fu <- median(merged_full$Follow.Up..d., na.rm = TRUE)
+
+# Imputar NA por la mediana
+merged_full$Follow.Up..d.[is.na(merged_full$Follow.Up..d.)] <- mediana_fu
+
+# Verificación
+summary(merged_full$Follow.Up..d.)
+sum(is.na(merged_full$Follow.Up..d.))
+```
+
+### PFS..d.
+
+```{r}
+# 1) Número y % de NA en PFS..d.
+n_missing_pfs <- sum(is.na(merged_full$PFS..d.))
+pct_missing_pfs <- round(n_missing_pfs / nrow(merged_full) * 100, 2)
+
+# 2) Estadísticos básicos
+stats_pfs <- summary(merged_full$PFS..d.)
+
+# 3) Mostrar resultados
+list(
+  n_missing   = n_missing_pfs,
+  pct_missing = pct_missing_pfs,
+  stats       = stats_pfs
+)
+
+```
+
+Antes de imputar, vamos a ver si esos valores de missing corresponden a valores `No` de la variable `Progresión`. En la variable de PFS respectiva a los días vemos que 3 de los valores faltantes efectivamente tienen progresión, y 5 no. No es plausible la teoría de que los NAs son correspondientes a la ausencia de progresión.
+
+```{r}
+merged_full %>%
+  filter(is.na(PFS..d.)) %>%
+  count(Progresión)
+```
+
+Además, tenemos 48 no progresados. Para que esta hipótesis tuviera sentido tendríamos que tener 8 valores `No` en la variable de progresión.
+
+```{r}
+merged_full %>% count(Progresión)
+```
+
+Imputamos los 8 valores faltantes de PFS..d. (3,51 % de la muestra) por la mediana de la variable (184,5 días), de manera que cada NA se reemplaza por este valor central resistente a los outliers y se preserva la coherencia del rango de supervivencia libre de progresión para el modelado.
+
+```{r}
+# Calcular mediana sin NA
+mediana_pfs <- median(merged_full$PFS..d., na.rm = TRUE)
+
+# Imputar NA por la mediana
+merged_full$PFS..d.[is.na(merged_full$PFS..d.)] <- mediana_pfs
+
+# Verificación
+summary(merged_full$PFS..d.)
+sum(is.na(merged_full$PFS..d.))
+```
+
+### PFS..m.
+
+```{r}
+# 1) Número y % de NA en PFS..m.
+n_missing_pfsm <- sum(is.na(merged_full$PFS..m.))
+pct_missing_pfsm <- round(n_missing_pfsm / nrow(merged_full) * 100, 2)
+
+# 2) Estadísticos básicos
+stats_pfsm <- summary(merged_full$PFS..m.)
+
+# 3) Mostrar todo junto
+list(
+  n_missing   = n_missing_pfsm,
+  pct_missing = pct_missing_pfsm,
+  stats       = stats_pfsm
+)
+
+```
+
+Para PFS..m. (3,5 % NA, distribución muy sesgada con outliers), lo más sencillo y robusto es imputar por la mediana (6,15 meses).
+
+```{r}
+# 1) Calcular mediana ignorando NA
+mediana_pfsm <- median(merged_full$PFS..m., na.rm = TRUE)
+
+# 2) Imputar los NA con la mediana
+merged_full$PFS..m.[is.na(merged_full$PFS..m.)] <- mediana_pfsm
+
+# 3) Verificación
+summary(merged_full$PFS..m.)
+sum(is.na(merged_full$PFS..m.))
+```
+### Progresión a x meses
+Antes de la eliminación de PFS, creamos dos variables derivadas de ellas.
+
+```{r}
+
+# Crear variables de progresión a 3, 6 y 12 meses
+merged_full <- merged_full %>%
+  mutate(
+    Prog.3.meses  = if_else(PFS..m. <=  3, "Sí", "No"),
+    Prog.6.meses  = if_else(PFS..m. <=  6, "Sí", "No"),
+    Prog.12.meses = if_else(PFS..m. <= 12, "Sí", "No"),
+    Prog.3.meses  = factor(Prog.3.meses,  levels = c("No", "Sí")),
+    Prog.6.meses  = factor(Prog.6.meses,  levels = c("No", "Sí")),
+    Prog.12.meses = factor(Prog.12.meses, levels = c("No", "Sí"))
+  )
+
+# Resumen numérico con na.rm = TRUE, ahora incluyendo 3 meses
+merged_full %>%
+  summarise(
+    n3    = sum(Prog.3.meses == "Sí", na.rm = TRUE),
+    pct3  = round(mean(Prog.3.meses == "Sí", na.rm = TRUE) * 100, 2),
+    n6    = sum(Prog.6.meses == "Sí", na.rm = TRUE),
+    pct6  = round(mean(Prog.6.meses == "Sí", na.rm = TRUE) * 100, 2),
+    n12   = sum(Prog.12.meses == "Sí", na.rm = TRUE),
+    pct12 = round(mean(Prog.12.meses == "Sí", na.rm = TRUE) * 100, 2)
+  )
+
+
+# Desglose de frecuencias para comprobar cada variable
+freq_3m  <- merged_full %>% count(Prog.3.meses)  %>% mutate(pct = round(n/sum(n)*100,2))
+freq_6m  <- merged_full %>% count(Prog.6.meses)  %>% mutate(pct = round(n/sum(n)*100,2))
+freq_12m <- merged_full %>% count(Prog.12.meses) %>% mutate(pct = round(n/sum(n)*100,2))
+
+print(freq_3m)
+print(freq_6m)
+print(freq_12m)
+
+
+```
+
+
+### Eliminación de PFS (days and months)
+
+Debido a que no es posible aclarar el funcionamiento de la variable se propone su eliminación.
+
+```{r eval=FALSE, include=FALSE}
+# con $<-NULL
+merged_full$`PFS..d.` <- NULL
+merged_full$`PFS..m.` <- NULL
+```
+
+### Escala.ECOG
+
+```{r}
+# Frecuencias absolutas y relativas de Escala.ECOG
+tab_ecog <- table(merged_full$Escala.ECOG, useNA = "ifany")
+pct_ecog <- prop.table(tab_ecog) * 100
+data.frame(
+  nivel  = names(tab_ecog),
+  conteo = as.vector(tab_ecog),
+  pct    = round(as.vector(pct_ecog), 2)
+)
+
+```
+
+Para Escala.ECOG (variable ordinal con niveles 0, 1, 2 y un 3,5 % de NA) lo más sencillo y apropiado es imputar los NA por la moda (nivel más frecuente), que es 1 (54,8 % de los casos). Con tan pocos missing evitamos complicar con métodos multivariantes y preservamos el orden natural de la variable.
+
+```{r}
+# 1) Calcular la moda
+tab_ecog <- table(merged_full$Escala.ECOG, useNA = "no")
+moda_ecog <- as.numeric(names(tab_ecog)[which.max(tab_ecog)])
+
+# 2) Imputar los NA con la moda
+merged_full$Escala.ECOG[is.na(merged_full$Escala.ECOG)] <- moda_ecog
+
+# 3) Verificación
+table(merged_full$Escala.ECOG, useNA = "ifany")
+prop.table(table(merged_full$Escala.ECOG, useNA = "ifany")) * 100
+```
+
+### Fecha.de.inicio.IO
+
+```{r}
+# 1) Número y % de NA en Fecha.de.inicio.IO
+n_missing_io <- sum(is.na(merged_full$Fecha.de.inicio.IO))
+pct_missing_io <- round(n_missing_io / nrow(merged_full) * 100, 2)
+
+# 2) Fecha mínima, mediana y máxima
+fechas_io <- merged_full$Fecha.de.inicio.IO
+fecha_min_io <- min(fechas_io, na.rm = TRUE)
+fecha_med_io <- median(fechas_io, na.rm = TRUE)
+fecha_max_io <- max(fechas_io, na.rm = TRUE)
+
+# 3) Mostrar resultados
+list(
+  n_missing   = n_missing_io,
+  pct_missing = pct_missing_io,
+  fecha_min   = fecha_min_io,
+  fecha_med   = fecha_med_io,
+  fecha_max   = fecha_max_io
+)
+
+```
+
+Hemos imputado las 7 fechas faltantes de inicio de inmunoterapia sustituyéndolas por la mediana observada (13-08-2021) y, además, creado un indicador binario (IO_no_inicio) que marca qué pacientes carecían originalmente de fecha. De este modo conservamos la señal de “no registrado” y garantizamos que la variable resultante sea numéricamente coherente para el modelo.
+
+```{r}
+# Fecha mediana
+fecha_mediana_io <- as_date("2021-08-13")
+
+merged_full <- merged_full %>%
+  mutate(
+    IO_no_inicio = is.na(Fecha.de.inicio.IO),
+    Fecha.de.inicio.IO = if_else(
+      IO_no_inicio,
+      fecha_mediana_io,
+      Fecha.de.inicio.IO
+    )
+  )
+
+# Verificación
+merged_full %>%
+  summarize(
+    n_na    = sum(is.na(Fecha.de.inicio.IO)),
+    n_flag  = sum(IO_no_inicio),
+    min     = min(Fecha.de.inicio.IO),
+    median  = median(Fecha.de.inicio.IO),
+    max     = max(Fecha.de.inicio.IO)
+  )
+```
+
+### Estadio.al.diagnóstico
+
+```{r}
+# Frecuencias y % de missing de Estadio.al.diagnóstico
+tab_estadio <- table(merged_full$Estadio.al.diagnóstico, useNA = "ifany")
+pct_estadio <- prop.table(tab_estadio) * 100
+data.frame(
+  estadio = names(tab_estadio),
+  conteo  = as.vector(tab_estadio),
+  pct     = round(as.vector(pct_estadio), 2)
+)
+```
+
+Para Estadio.al.diagnóstico (7 NA ≈ 3 %), al ser una variable ordinal con subniveles y con “IVA” como categoría más frecuente (34,7 %), lo más sencillo y consistente es imputar los NA por la moda (“IVA”). De este modo mantenemos la distribución original y respetamos el orden clínico de los estadios.
+
+```{r}
+# Calcular la moda de Estadio.al.diagnóstico (excluyendo NA)
+tab <- table(merged_full$Estadio.al.diagnóstico, useNA = "no")
+moda_estadio <- names(tab)[which.max(tab)]
+
+# Imputar los NA con la moda
+merged_full$Estadio.al.diagnóstico[is.na(merged_full$Estadio.al.diagnóstico)] <- moda_estadio
+
+# Verificación
+table(merged_full$Estadio.al.diagnóstico, useNA = "ifany")
+prop.table(table(merged_full$Estadio.al.diagnóstico, useNA = "ifany")) * 100
+
+```
+
+### Fecha.de.inicio.IO..metastáticos.
+
+```{r}
+# 1) Número y % de NA
+n_missing_metaIO <- sum(is.na(merged_full$Fecha.de.inicio.IO..metastáticos.))
+pct_missing_metaIO <- round(n_missing_metaIO / nrow(merged_full) * 100, 2)
+
+# 2) Fecha mínima, mediana y máxima
+fechas_metaIO <- merged_full$Fecha.de.inicio.IO..metastáticos.
+fecha_min_metaIO <- min(fechas_metaIO, na.rm = TRUE)
+fecha_med_metaIO <- median(fechas_metaIO, na.rm = TRUE)
+fecha_max_metaIO <- max(fechas_metaIO, na.rm = TRUE)
+
+# 3) Mostrar resultados
+list(
+  n_missing   = n_missing_metaIO,
+  pct_missing = pct_missing_metaIO,
+  fecha_min   = fecha_min_metaIO,
+  fecha_med   = fecha_med_metaIO,
+  fecha_max   = fecha_max_metaIO
+)
+
+```
+
+Imputamos las 7 fechas faltantes de inicio de la segunda línea de inmunoterapia en situación metastásica sustituyéndolas por la mediana observada (16-08-2021) y, además, añadimos un indicador binario (MetaIO_no_inicio) que señala los pacientes sin fecha registrada. Así conservamos la información de “no iniciado” y aseguramos que la variable permanezca en un formato de fecha coherente para el modelo.
+
+```{r}
+# Mediana de fecha
+fecha_mediana_metaIO <- as_date("2021-08-16")
+
+merged_full <- merged_full %>%
+  mutate(
+    MetaIO_no_inicio = is.na(Fecha.de.inicio.IO..metastáticos.),
+    Fecha.de.inicio.IO..metastáticos. = if_else(
+      MetaIO_no_inicio,
+      fecha_mediana_metaIO,
+      Fecha.de.inicio.IO..metastáticos.
+    )
+  )
+
+# Verificación
+merged_full %>%
+  summarize(
+    n_na    = sum(is.na(Fecha.de.inicio.IO..metastáticos.)),
+    n_flag  = sum(MetaIO_no_inicio),
+    min     = min(Fecha.de.inicio.IO..metastáticos.),
+    median  = median(Fecha.de.inicio.IO..metastáticos.),
+    max     = max(Fecha.de.inicio.IO..metastáticos.)
+  )
+```
+
+### TIPO.IO..metastáticos.
+
+```{r}
+# Frecuencias absolutas y relativas de TIPO.IO..metastáticos.
+tab_tipo_meta <- table(merged_full$TIPO.IO..metastáticos., useNA = "ifany")
+pct_tipo_meta <- prop.table(tab_tipo_meta) * 100
+data.frame(
+  nivel  = names(tab_tipo_meta),
+  conteo = as.vector(tab_tipo_meta),
+  pct    = round(as.vector(pct_tipo_meta), 2)
+)
+
+```
+
+Para TIPO.IO..metastáticos., al ser categórica y tener sólo un 3 % de NA, lo más limpio es convertir esos NA en un nivel “Desconocido” sin alterar las tres categorías reales (“Inmunoterapia”, “Inmunoterapia + antiangiogénico”, “Inmunoterapia + quimioterapia”), de modo que el modelo capte que había un valor no registrado.
+
+```{r}
+merged_full <- merged_full %>%
+  mutate(
+    TIPO.IO..metastáticos. = as.factor(TIPO.IO..metastáticos.),                        # asegurar factor
+    TIPO.IO..metastáticos. = fct_explicit_na(TIPO.IO..metastáticos., na_level = "Desconocido")    # NA → “Desconocido”
+  )
+
+# Verificación
+merged_full %>%
+  count(TIPO.IO..metastáticos.) %>%
+  mutate(pct = round(n / sum(n) * 100, 2))
+```
+
+### Diana.IO
+
+```{r}
+# Frecuencias absolutas y relativas de Diana.IO
+tab_diana <- table(merged_full$Diana.IO, useNA = "ifany")
+pct_diana <- prop.table(tab_diana) * 100
+data.frame(
+  nivel  = names(tab_diana),
+  conteo = as.vector(tab_diana),
+  pct    = round(as.vector(pct_diana), 2)
+)
+```
+
+Imputamos los 4 valores faltantes de la variable Diana.IO (1,75 % del total) añadiendo un nivel “Desconocido” y manteniendo intactas las categorías existentes (“PD-1”, “PD-L1”, “Otro” y las combinaciones raras), de modo que el modelo pueda distinguir los casos no registrados sin perder ninguna información original.
+
+```{r}
+merged_full <- merged_full %>%
+  mutate(
+    Diana.IO = as.factor(Diana.IO),                             # asegurar factor
+    Diana.IO = fct_explicit_na(Diana.IO, na_level = "Desconocido")  # NA → “Desconocido”
+  )
+
+# Verificación
+merged_full %>%
+  count(Diana.IO) %>%
+  mutate(pct = round(n / sum(n) * 100, 2))
+
+```
+
+### Nº.de.líneas.previas
+
+```{r}
+# 1) Número y % de NA en Nº.de.líneas.previas
+n_missing_lines <- sum(is.na(merged_full$Nº.de.líneas.previas))
+pct_missing_lines <- round(n_missing_lines / nrow(merged_full) * 100, 2)
+
+# 2) Estadísticos básicos
+stats_lines <- summary(merged_full$Nº.de.líneas.previas)
+
+# 3) Mostrar todo junto
+list(
+  n_missing   = n_missing_lines,
+  pct_missing = pct_missing_lines,
+  stats       = stats_lines
+)
+
+```
+
+Imputamos los 4 valores faltantes de Nº.de.líneas.previas (1,75 % de la muestra) sustituyéndolos por la mediana (0 líneas), de modo que las observaciones sin dato se consideren como sin tratamientos previos y no se distorsione la concentración de valores bajos propia de esta variable.
+
+```{r}
+# Calcular mediana ignorando NA
+mediana_lines <- median(merged_full$Nº.de.líneas.previas, na.rm = TRUE)
+
+# Imputar los NA con la mediana
+merged_full$Nº.de.líneas.previas[is.na(merged_full$Nº.de.líneas.previas)] <- mediana_lines
+
+# Verificación
+summary(merged_full$Nº.de.líneas.previas)
+sum(is.na(merged_full$Nº.de.líneas.previas))
+
+```
+
+### LíneasPrevias_Cat
+
+Este bloque genera la variable categórica ´LíneasPrevias_Cat´ a partir de `Nº.de.líneas.previas`, agrupando los valores en tres niveles: “0” para pacientes sin líneas previas, “1” para quienes tienen una línea, y “2 o más” para los que cuentan con dos o más. Finalmente, la factoriza con ese orden para asegurar consistencia en análisis y visualizaciones.
+
+```{r}
+merged_full <- merged_full %>%
+  mutate(
+    LíneasPrevias_Cat = case_when(
+      `Nº.de.líneas.previas` == 0       ~ "0",
+      `Nº.de.líneas.previas` == 1       ~ "1",
+      `Nº.de.líneas.previas` >= 2       ~ "2 o más",
+      TRUE                              ~ NA_character_
+    ),
+    LíneasPrevias_Cat = factor(
+      LíneasPrevias_Cat,
+      levels = c("0", "1", "2 o más")
+    )
+  )
+```
+
+
+### IO.Tipo.General
+
+```{r}
+# Frecuencias absolutas y relativas de IO.Tipo.General
+tab_io_gen <- table(merged_full$IO.Tipo.General, useNA = "ifany")
+pct_io_gen <- prop.table(tab_io_gen) * 100
+data.frame(
+  nivel  = names(tab_io_gen),
+  conteo = as.vector(tab_io_gen),
+  pct    = round(as.vector(pct_io_gen), 2)
+)
+
+```
+
+Imputamos los 4 valores faltantes de IO.Tipo.General (1,75 % del total) añadiendo un nivel “Desconocido” y conservando intactas las categorías existentes (“Inmunoterapia”, “Inmunoterapia + antiangiogénico”, “Inmunoterapia + quimioterapia” e “IO adyuvante no met”), de modo que el modelo pueda distinguir los casos no registrados sin perder información original.
+
+```{r}
+merged_full <- merged_full %>%
+  mutate(
+    IO.Tipo.General = as.factor(IO.Tipo.General),                          # asegurar factor
+    IO.Tipo.General = fct_explicit_na(IO.Tipo.General, na_level = "Desconocido")  # NA → “Desconocido”
+  )
+
+# Verificación
+merged_full %>%
+  count(IO.Tipo.General) %>%
+  mutate(pct = round(n / sum(n) * 100, 2))
+
+```
+
+### Presencia.linea.Previa
+
+```{r}
+# Frecuencias absolutas y relativas de Presencia.linea.Previa
+tab_previa <- table(merged_full$Presencia.linea.Previa, useNA = "ifany")
+pct_previa <- prop.table(tab_previa) * 100
+data.frame(
+  nivel  = names(tab_previa),
+  conteo = as.vector(tab_previa),
+  pct    = round(as.vector(pct_previa), 2)
+)
+```
+
+Para la variable Presencia.linea.Previa (1,75 % de valores faltantes y dos categorías “No” (64,5 %) y “Si” (33,8 %)), imputamos los NA por la moda (“No”), de forma que las pocas observaciones sin dato pasen al nivel mayoritario y no se altere la distribución ni el balance de la variable para el modelo.
+
+```{r}
+# 1) Calcular la moda (nivel más frecuente) excluyendo NA
+moda_previa <- names(which.max(table(merged_full$Presencia.linea.Previa, useNA = "no")))
+
+# 2) Imputar los NA con la moda
+merged_full$Presencia.linea.Previa[is.na(merged_full$Presencia.linea.Previa)] <- moda_previa
+
+# 3) Verificación
+table(merged_full$Presencia.linea.Previa, useNA = "ifany")
+prop.table(table(merged_full$Presencia.linea.Previa, useNA = "ifany")) * 100
+```
+
+### Fecha.de.diagnóstico
+
+```{r}
+# 1) Número y % de NA en Fecha.de.diagnóstico
+n_missing_diag <- sum(is.na(merged_full$Fecha.de.diagnóstico))
+pct_missing_diag <- round(n_missing_diag / nrow(merged_full) * 100, 2)
+
+# 2) Rango y fecha mediana
+fechas_diag <- merged_full$Fecha.de.diagnóstico
+fecha_min_diag <- min(fechas_diag, na.rm = TRUE)
+fecha_med_diag <- median(fechas_diag, na.rm = TRUE)
+fecha_max_diag <- max(fechas_diag, na.rm = TRUE)
+
+# 3) Mostrar resultados
+list(
+  n_missing   = n_missing_diag,
+  pct_missing = pct_missing_diag,
+  fecha_min   = fecha_min_diag,
+  fecha_med   = fecha_med_diag,
+  fecha_max   = fecha_max_diag
+)
+```
+
+Imputamos las 2 fechas faltantes de diagnóstico (0,88 % del total) reemplazándolas por la mediana observada (01-05-2021) y añadimos un indicador (Diagnostico_no_reg) para marcar los casos originalmente sin fecha, de modo que conservemos la señal de “no registrado” y mantengamos la variable en un formato de fecha coherente para el modelo.
+
+```{r}
+# 1) Fecha mediana observada
+fecha_mediana_diag <- as_date("2021-05-01")
+
+merged_full <- merged_full %>%
+  # 2) Indicador de missing
+  mutate(
+    Diagnostico_no_reg = is.na(Fecha.de.diagnóstico),
+    # 3) Imputar NA con la mediana
+    Fecha.de.diagnóstico = if_else(
+      Diagnostico_no_reg,
+      fecha_mediana_diag,
+      Fecha.de.diagnóstico
+    )
+  )
+
+# 4) Verificación
+merged_full %>%
+  summarize(
+    n_na    = sum(is.na(Fecha.de.diagnóstico)),
+    n_flag  = sum(Diagnostico_no_reg),
+    min     = min(Fecha.de.diagnóstico),
+    median  = median(Fecha.de.diagnóstico),
+    max     = max(Fecha.de.diagnóstico)
+  )
+```
+
+### Tabaquismo..0.Nunca.fumador..1.Exfumador..2..Fumador.Activo.
+
+```{r}
+tab_tabq <- table(merged_full$Tabaquismo..0.Nunca.fumador..1.Exfumador..2..Fumador.Activo., useNA = "ifany")
+pct_tabq <- prop.table(tab_tabq) * 100
+data.frame(
+  nivel  = names(tab_tabq),
+  conteo = as.vector(tab_tabq),
+  pct    = round(as.vector(pct_tabq), 2)
+)
+
+```
+
+Para Tabaquismo (0,44 % NA; niveles “Exfumador” 56,6 %, “Fumador” 37,3 %, “Nunca” 5,7 %), lo más sencillo y coherente es imputar el único NA al nivel “Nunca”, de forma que la observación sin dato pase al nivel más bajo sin alterar la distribución de los demás.
+
+```{r}
+# Imputar el NA al nivel "Nunca"
+merged_full$Tabaquismo..0.Nunca.fumador..1.Exfumador..2..Fumador.Activo.[
+  is.na(merged_full$Tabaquismo..0.Nunca.fumador..1.Exfumador..2..Fumador.Activo.)
+] <- "Nunca"
+
+# Verificación
+table(merged_full$Tabaquismo..0.Nunca.fumador..1.Exfumador..2..Fumador.Activo., useNA = "ifany")
+prop.table(table(merged_full$Tabaquismo..0.Nunca.fumador..1.Exfumador..2..Fumador.Activo., useNA = "ifany")) * 100
+
+```
+
+### Tumor.previo
+
+```{r}
+# Frecuencias absolutas y relativas de Tumor.previo
+tab_tprevio <- table(merged_full$Tumor.previo, useNA = "ifany")
+pct_tprevio <- prop.table(tab_tprevio) * 100
+data.frame(
+  nivel  = names(tab_tprevio),
+  conteo = as.vector(tab_tprevio),
+  pct    = round(as.vector(pct_tprevio), 2)
+)
+```
+
+Para la variable Tumor.previo, que presenta un único valor faltante (0,44 %) y dos categorías (“No” 84,2 %; “Si” 15,4 %), hemos optado por una imputación estratificada según el Estadio.al.diagnóstico. Con este enfoque, calculamos la moda de Tumor.previo dentro de cada estadio y asignamos al paciente con dato ausente el valor modal de su propio estrato (por ejemplo, en el estadio IIIA la moda fue “No”). Así preservamos la distribución de la variable en cada subgrupo y minimizamos posibles sesgos derivados de una imputación global.
+
+```{r}
+# 1) Función para moda
+mode_fun <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# 2) Calcular la moda de Tumor.previo por estadio
+modas_por_estadio <- merged_full %>%
+  filter(!is.na(Tumor.previo)) %>%
+  group_by(Estadio.al.diagnóstico) %>%
+  summarise(
+    moda = mode_fun(Tumor.previo),
+    .groups = "drop"
+  )
+
+# 3) Mostrar la tabla
+print(modas_por_estadio)
+```
+
+```{r}
+# Función para calcular moda
+mode_fun <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# 1) Calcular la moda de Tumor.previo por cada estadio (sin contar NAs)
+modas_por_estadio <- merged_full %>%
+  filter(!is.na(Tumor.previo)) %>%
+  group_by(Estadio.al.diagnóstico) %>%
+  summarise(moda = mode_fun(Tumor.previo), .groups = "drop")
+
+# 2) Imputar el NA usando la moda de su estadio
+merged_full <- merged_full %>%
+  left_join(modas_por_estadio, by = "Estadio.al.diagnóstico") %>%
+  mutate(
+    Tumor.previo = if_else(
+      is.na(Tumor.previo),
+      moda,               # moda de su estrato
+      Tumor.previo
+    )
+  ) %>%
+  select(-moda)
+
+# 3) Verificación: sigue habiendo el mismo total de niveles y sin NA
+table(merged_full$Tumor.previo, useNA = "ifany")
+```
+
+### Edad.al.diagnóstico
+
+```{r}
+# 1) Nº y % de NA en Edad.al.diagnóstico
+n_missing_age <- sum(is.na(merged_full$Edad.al.diagnóstico))
+pct_missing_age <- round(n_missing_age / nrow(merged_full) * 100, 2)
+
+# 2) Estadísticos básicos
+stats_age <- summary(merged_full$Edad.al.diagnóstico)
+
+# 3) Imprimir todo junto
+list(
+  n_missing   = n_missing_age,
+  pct_missing = pct_missing_age,
+  stats       = stats_age
+)
+
+```
+
+Imputamos el único valor faltante de Edad.al.diagnóstico (0,44 % de la muestra) sustituyéndolo por la mediana observada (66 años), garantizando que la variable mantenga su centro real sin verse afectada por posibles outliers ni alterar la distribución global.
+
+```{r}
+# Calcular mediana ignorando el NA
+mediana_age <- median(merged_full$Edad.al.diagnóstico, na.rm = TRUE)
+
+# Imputar el NA con la mediana
+merged_full$Edad.al.diagnóstico[is.na(merged_full$Edad.al.diagnóstico)] <- mediana_age
+
+# Verificación
+summary(merged_full$Edad.al.diagnóstico)
+sum(is.na(merged_full$Edad.al.diagnóstico))
+```
+
+# Estratificación de progresión por estadíos
+
+## Progresión a punto final
+
+Estudiamos la distribución de los valores de progresión en base al estadio al diagnostico. Esta es una forma de balancear las clases previa a la aplicación del modelo. 
+
+```{r}
+library(ggplot2)
+
+# Extraer el nivel principal de estadio (I, II, III, IV)
+merged_full2 <- merged_full %>%
+  mutate(
+    Estadio_princ = sub("[A-Z]$", "", Estadio.al.diagnóstico)
+  ) %>%
+  # Nos quedamos solo con I, II, III y IV
+  filter(Estadio_princ %in% c("I", "II", "III", "IV"))
+
+# Tabla de conteos y porcentajes por estadio principal y progresión
+tabla_prog <- merged_full2 %>%
+  count(Estadio_princ, Progresión) %>%
+  group_by(Estadio_princ) %>%
+  mutate(
+    pct = round(n / sum(n) * 100, 1)
+  ) %>%
+  ungroup()
+
+ggplot(tabla_prog, aes(x = Estadio_princ, y = pct, fill = Progresión)) +
+  geom_col(position = "stack") +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_stack(vjust = 0.5), size = 3, color = "white") +
+  labs(
+    x     = "Estadio al diagnóstico (nivel principal)",
+    y     = "Porcentaje de pacientes",
+    title = "Distribución de Progresión por estadio I–IV"
+  ) +
+  theme_classic()
+```
+
+```{r}
+# Extraer el nivel principal de estadio (I, II, III, IV)
+merged_full2 <- merged_full %>%
+  mutate(
+    Estadio_princ = sub("[A-Z]$", "", Estadio.al.diagnóstico)
+  ) %>%
+  # Nos quedamos solo con I, II, III y IV
+  filter(Estadio_princ %in% c("I", "II", "III", "IV"))
+
+# Tabla de conteos y porcentajes por estadio principal y progresión a 6 meses
+tabla_prog6 <- merged_full2 %>%
+  count(Estadio_princ, Prog.6.meses) %>%
+  group_by(Estadio_princ) %>%
+  mutate(
+    pct = round(n / sum(n) * 100, 1)
+  ) %>%
+  ungroup()
+
+ggplot(tabla_prog6, aes(x = Estadio_princ, y = pct, fill = Prog.6.meses)) +
+  geom_col(position = "stack") +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_stack(vjust = 0.5),
+            size = 3, color = "white") +
+  scale_fill_manual(
+    values = c("No" = "#FC4E07", "Sí" = "#00AFBB"), 
+    name   = "Prog. a 6 meses"
+  ) +
+  labs(
+    x     = "Estadio al diagnóstico (nivel principal)",
+    y     = "Porcentaje de pacientes",
+    title = "Distribución de progresión a 6 meses por estadio I–IV"
+  ) +
+  theme_classic()
+
+```
+```{r}
+
+# Extraer el nivel principal de estadio (I, II, III, IV)
+merged_full2 <- merged_full %>%
+  mutate(
+    Estadio_princ = sub("[A-Z]$", "", Estadio.al.diagnóstico)
+  ) %>%
+  filter(Estadio_princ %in% c("I", "II", "III", "IV"))
+
+# Tabla de conteos y porcentajes por estadio principal y progresión a 12 meses
+tabla_prog12 <- merged_full2 %>%
+  count(Estadio_princ, Prog.12.meses) %>%
+  group_by(Estadio_princ) %>%
+  mutate(
+    pct = round(n / sum(n) * 100, 1)
+  ) %>%
+  ungroup()
+
+ggplot(tabla_prog12, aes(x = Estadio_princ, y = pct, fill = Prog.12.meses)) +
+  geom_col(position = "stack") +
+  geom_text(aes(label = paste0(pct, "%")),
+            position = position_stack(vjust = 0.5),
+            size = 3, color = "white") +
+  scale_fill_manual(
+    values = c("No" = "#00AFBB", "Sí" = "#FC4E07"),
+    name   = "Prog. a 12 meses"
+  ) +
+  labs(
+    x     = "Estadio al diagnóstico (nivel principal)",
+    y     = "Porcentaje de pacientes",
+    title = "Distribución de progresión a 12 meses por estadio I–IV"
+  ) +
+  theme_classic()
+
+```
+
+# Calcular N de Progresión
+
+Sobre el conjunto de datos plenamente integrado vamos a calcular la N de los progresados 3, 6 y 12 meses.
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) Creamos los flags has_bs1/has_bs2/has_bs3 sobre merged_full
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+
+# 1) Preparamos los datos largos y filtramos sólo quienes tienen datos de cada batch
+plot_data <- merged_full %>%
+  pivot_longer(
+    cols      = c(Prog.3.meses, Prog.6.meses, Prog.12.meses, Progresión),
+    names_to  = "Periodo",
+    values_to = "Progresion"
+  ) %>%
+  pivot_longer(
+    cols      = c(has_bs1, has_bs2, has_bs3),
+    names_to  = "Batch",
+    values_to = "Disponible"
+  ) %>%
+  mutate(
+    # renombramos cada nombre de columna a su etiqueta de meses
+    Periodo = recode(Periodo,
+      "Prog.3.meses"  = "3 meses",
+      "Prog.6.meses"  = "6 meses",
+      "Prog.12.meses" = "12 meses",
+      "Progresión"    = "24 meses"
+    ),
+    # forzamos el orden deseado, incluyendo el nuevo nivel
+    Periodo = factor(Periodo, levels = c("3 meses","6 meses","12 meses","24 meses")),
+    Batch = recode(Batch,
+      "has_bs1" = "bs1",
+      "has_bs2" = "bs2",
+      "has_bs3" = "bs3"
+    )
+  ) %>%
+  filter(Disponible)   # sólo pacientes con datos para ese batch
+
+# 2) Resumimos conteos por batch/periodo/progresión
+plot_summary <- plot_data %>%
+  count(Batch, Periodo, Progresion)
+
+# 3) Calculamos cuántos faltan por batch y creamos labels para los strips
+total_n <- nrow(merged_full)
+batch_stats <- merged_full %>%
+  summarise(
+    bs1 = sum(has_bs1, na.rm = TRUE),
+    bs2 = sum(has_bs2, na.rm = TRUE),
+    bs3 = sum(has_bs3, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "Batch", values_to = "presentes") %>%
+  mutate(
+    faltantes    = total_n - presentes,
+    pct_faltante = round(faltantes/total_n * 100, 1),
+    label_facet  = paste0(
+      Batch, "\nFaltantes: ",
+      faltantes, "/", total_n,
+      " (", pct_faltante, "%)"
+    )
+  ) %>%
+  select(Batch, label_facet)
+
+batch_labels <- setNames(batch_stats$label_facet, batch_stats$Batch)
+
+# 4) Dibujamos el gráfico
+ggplot(plot_summary, aes(x = Progresion, y = n, fill = Progresion)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    Batch ~ Periodo,
+    labeller  = labeller(Batch = batch_labels),
+    switch    = "y"
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  scale_fill_brewer(
+    palette = "Set2",
+    name    = "Progresión",
+    labels  = c("No", "Sí")
+  ) +
+  labs(
+    x     = "¿Progresión?",
+    y     = "Número de pacientes",
+    title = "Progresión a 3, 6, 12 y 24 meses por batch de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 12),
+    strip.background   = element_rect(fill = "grey95", color = NA),
+    strip.text         = element_text(face = "bold", size = 10),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    legend.position    = "bottom",
+    legend.title       = element_text(face = "bold"),
+    legend.text        = element_text(size = 10),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+
+# Calcular N por presencia de lineas previas
+
+```{r}
+# 0) Creamos los flags has_bs1/has_bs2/has_bs3 sobre merged_full
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+# 1) Preparamos los datos “largos” para líneas previas
+plot_data_lines <- merged_full %>%
+  # Pivotamos las flags de disponibilidad para crear fila por batch
+  pivot_longer(
+    cols     = c(has_bs1, has_bs2, has_bs3),
+    names_to = "Batch",
+    values_to= "Disponible"
+  ) %>%
+  mutate(
+    # Renombramos los batches
+    Batch = recode(Batch,
+      "has_bs1" = "bs1",
+      "has_bs2" = "bs2",
+      "has_bs3" = "bs3"
+    ),
+    # Convertimos Nº.de.líneas.previas a factor para que ggplot lo trate como categoría
+    LinesPrevias = factor(`Nº.de.líneas.previas`)
+  ) %>%
+  # Sólo nos quedamos con los pacientes que realmente tienen datos de ese batch
+  filter(Disponible)
+
+# 2) Resumimos n por batch × valor de líneas previas
+plot_summary_lines <- plot_data_lines %>%
+  count(Batch, LinesPrevias)
+
+# 3) Calculamos faltantes y montamos labels para los strips (igual que antes)
+total_n <- nrow(merged_full)
+batch_stats <- merged_full %>%
+  summarise(
+    bs1 = sum(has_bs1, na.rm = TRUE),
+    bs2 = sum(has_bs2, na.rm = TRUE),
+    bs3 = sum(has_bs3, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "Batch", values_to = "presentes") %>%
+  mutate(
+    faltantes    = total_n - presentes,
+    pct_faltante = round(faltantes/total_n * 100, 1),
+    label_facet  = paste0(
+      Batch, "\nFaltantes: ",
+      faltantes, "/", total_n,
+      " (", pct_faltante, "%)"
+    )
+  ) %>%
+  select(Batch, label_facet)
+
+batch_labels <- setNames(batch_stats$label_facet, batch_stats$Batch)
+
+# 4) Dibujamos el bar‐plot facetado por batch
+ggplot(plot_summary_lines, aes(x = LinesPrevias, y = n, fill = LinesPrevias)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    Batch ~ .,
+    labeller = labeller(Batch = batch_labels),
+    switch   = "y"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Número de líneas previas",
+    y     = "Número de pacientes",
+    title = "Distribución de líneas previas por batch de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 12),
+    strip.background   = element_rect(fill = "grey95", color = NA),
+    strip.text         = element_text(face = "bold", size = 10),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+# Calcular N por numero de lineas previas categorizadas
+
+```{r}
+# 0) Creamos flags de disponibilidad bs1/bs2/bs3
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+# 1) Preparamos los datos largos usando la nueva variable LíneasPrevias_Cat
+plot_data_cat <- merged_full %>%
+  pivot_longer(
+    cols     = c(has_bs1, has_bs2, has_bs3),
+    names_to = "Batch",
+    values_to= "Disponible"
+  ) %>%
+  mutate(
+    Batch = recode(Batch,
+                   "has_bs1" = "bs1",
+                   "has_bs2" = "bs2",
+                   "has_bs3" = "bs3")
+  ) %>%
+  filter(Disponible, !is.na(LíneasPrevias_Cat))
+
+# 2) Resumimos n por batch × categoría de líneas previas
+plot_summary_cat <- plot_data_cat %>%
+  count(Batch, LíneasPrevias_Cat)
+
+# 3) Calculamos etiquetas de faltantes para cada batch
+total_n <- nrow(merged_full)
+batch_stats <- merged_full %>%
+  summarise(
+    bs1 = sum(has_bs1, na.rm = TRUE),
+    bs2 = sum(has_bs2, na.rm = TRUE),
+    bs3 = sum(has_bs3, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "Batch", values_to = "presentes") %>%
+  mutate(
+    faltantes    = total_n - presentes,
+    pct_faltante = round(faltantes/total_n * 100, 1),
+    label_facet  = paste0(
+      Batch, "\nFaltantes: ",
+      faltantes, "/", total_n,
+      " (", pct_faltante, "%)"
+    )
+  ) %>%
+  select(Batch, label_facet)
+
+batch_labels <- setNames(batch_stats$label_facet, batch_stats$Batch)
+
+# 4) Dibujamos el bar‐plot facetado por batch, ahora con LíneasPrevias_Cat
+ggplot(plot_summary_cat, aes(x = LíneasPrevias_Cat, y = n, fill = LíneasPrevias_Cat)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    Batch ~ .,
+    labeller = labeller(Batch = batch_labels),
+    switch   = "y"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Categoría de líneas previas",
+    y     = "Número de pacientes",
+    title = "Distribución de líneas previas por batch de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 12),
+    strip.background   = element_rect(fill = "grey95", color = NA),
+    strip.text         = element_text(face = "bold", size = 10),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+```
+
+
+# Calcular N por tipo de terapia
+
+```{r}
+
+# 0) Aseguramos flags de disponibilidad bs1/bs2/bs3
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+# 1) Preparamos datos para IO.Tipo.General
+plot_data_io_gen <- merged_full %>%
+  pivot_longer(
+    cols      = c(has_bs1, has_bs2, has_bs3),
+    names_to  = "Batch",
+    values_to = "Disponible"
+  ) %>%
+  mutate(
+    Batch = recode(Batch,
+                   "has_bs1" = "bs1",
+                   "has_bs2" = "bs2",
+                   "has_bs3" = "bs3"),
+    IO_gen = IO.Tipo.General
+  ) %>%
+  filter(Disponible, !is.na(IO_gen))
+
+# 2) Resumimos conteos por batch × categoría IO.Tipo.General
+plot_summary_io_gen <- plot_data_io_gen %>%
+  count(Batch, IO_gen)
+
+# 3) Creamos etiquetas de faltantes para cada batch
+total_n <- nrow(merged_full)
+batch_stats <- merged_full %>%
+  summarise(
+    bs1 = sum(has_bs1, na.rm = TRUE),
+    bs2 = sum(has_bs2, na.rm = TRUE),
+    bs3 = sum(has_bs3, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "Batch", values_to = "presentes") %>%
+  mutate(
+    faltantes    = total_n - presentes,
+    pct_faltante = round(faltantes / total_n * 100, 1),
+    label_facet  = paste0(
+      Batch, "\nFaltantes: ",
+      faltantes, "/", total_n,
+      " (", pct_faltante, "%)"
+    )
+  ) %>%
+  select(Batch, label_facet)
+
+batch_labels <- setNames(batch_stats$label_facet, batch_stats$Batch)
+
+# 4) Gráfico de barras para IO.Tipo.General
+ggplot(plot_summary_io_gen, aes(x = factor(IO_gen), y = n, fill = factor(IO_gen))) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    Batch ~ .,
+    labeller = labeller(Batch = batch_labels),
+    switch   = "y"
+  ) +
+  scale_fill_brewer(
+    palette = "Set2",
+    name    = "Esquema IO",
+    labels  = c(
+      "Inmunoterapia",
+      "Inmunoterapia + quimioterapia",
+      "Inmunoterapia + antiangiogénico",
+      "IO adyuvante no met"
+    )
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Esquema de Inmunoterapia",
+    y     = "Número de pacientes",
+    title = "Distribución del tipo de IO por batch de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 12),
+    strip.background   = element_rect(fill = "grey95", color = NA),
+    strip.text         = element_text(face = "bold", size = 10),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+
+```
+# Calcular N por tipo de terapia Adyuvante
+
+```{r}
+# 1) Creamos flags de disponibilidad bs1/bs2/bs3
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+# 2) Preparamos los datos “largos” para Quimio.Radio.Adj
+plot_data_qradj <- merged_full %>%
+  pivot_longer(
+    cols      = c(has_bs1, has_bs2, has_bs3),
+    names_to  = "Batch",
+    values_to = "Disponible"
+  ) %>%
+  mutate(
+    Batch = recode(Batch,
+                   "has_bs1" = "bs1",
+                   "has_bs2" = "bs2",
+                   "has_bs3" = "bs3"),
+    QRA = Quimio.Radio.Adj
+  ) %>%
+  filter(Disponible, !is.na(QRA))
+
+# 3) Resumimos conteos por batch × QRA
+plot_summary_qradj <- plot_data_qradj %>%
+  count(Batch, QRA)
+
+# 4) Generamos las etiquetas de faltantes para los strips
+total_n <- nrow(merged_full)
+batch_stats <- merged_full %>%
+  summarise(
+    bs1 = sum(has_bs1, na.rm = TRUE),
+    bs2 = sum(has_bs2, na.rm = TRUE),
+    bs3 = sum(has_bs3, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "Batch", values_to = "presentes") %>%
+  mutate(
+    faltantes    = total_n - presentes,
+    pct_faltante = round(faltantes / total_n * 100, 1),
+    label_facet  = paste0(
+      Batch, "\nFaltantes: ",
+      faltantes, "/", total_n,
+      " (", pct_faltante, "%)"
+    )
+  ) %>%
+  select(Batch, label_facet)
+
+batch_labels <- setNames(batch_stats$label_facet, batch_stats$Batch)
+
+# 5) Dibujamos el bar‐plot facetado por batch
+ggplot(plot_summary_qradj, aes(x = QRA, y = n, fill = QRA)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    Batch ~ .,
+    labeller = labeller(Batch = batch_labels),
+    switch   = "y"
+  ) +
+  scale_fill_brewer(
+    palette = "Set2",
+    name    = "Quimio/Radio adj",
+    labels  = levels(merged_full$Quimio.Radio.Adj)
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Tipo de terapia adyuvante",
+    y     = "Número de pacientes",
+    title = "Distribución de Quimio/Radio por batch de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 12),
+    strip.background   = element_rect(fill = "grey95", color = NA),
+    strip.text         = element_text(face = "bold", size = 10),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+```
+# Calculo de N por mutación
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) (Re)crear flags de disponibilidad bs1/bs2/bs3
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+# 1) Lista de genes y comprobación de existencia
+genes_want    <- c("EGFR", "ALK", "ROS1", "RET", "BRAF..V600.", "KRAS")
+genes_present <- intersect(genes_want, names(merged_full))
+if (length(genes_present) == 0) {
+  stop("Ninguno de los genes solicitados está presente en merged_full.")
+}
+
+# 2) Construcción del data.frame largo
+gene_data <- merged_full %>%
+  pivot_longer(
+    cols     = all_of(genes_present),
+    names_to = "Gen",
+    values_to= "Estado"
+  ) %>%
+  pivot_longer(
+    cols     = c(has_bs1, has_bs2, has_bs3),
+    names_to = "Batch",
+    values_to= "Disponible"
+  ) %>%
+  mutate(
+    Batch = recode(Batch,
+                   "has_bs1" = "bs1",
+                   "has_bs2" = "bs2",
+                   "has_bs3" = "bs3")
+  ) %>%
+  filter(Disponible, !is.na(Estado))
+
+# 3) Contar y completar combinaciones faltantes
+gene_summary <- gene_data %>%
+  count(Batch, Gen, Estado) %>%
+  complete(
+    Batch  = c("bs1","bs2","bs3"),
+    Gen    = genes_present,
+    Estado = c("Mutado", "No Mutado"),
+    fill   = list(n = 0)
+  )
+
+# 4) Calcular etiquetas de faltantes para cada batch
+total_n <- nrow(merged_full)
+batch_stats <- merged_full %>%
+  summarise(
+    bs1 = sum(has_bs1, na.rm = TRUE),
+    bs2 = sum(has_bs2, na.rm = TRUE),
+    bs3 = sum(has_bs3, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "Batch", values_to = "presentes") %>%
+  mutate(
+    faltantes    = total_n - presentes,
+    pct_faltante = round(faltantes/total_n * 100, 1),
+    label_facet  = paste0(
+      Batch, "\nFaltantes: ",
+      faltantes, "/", total_n,
+      " (", pct_faltante, "%)"
+    )
+  ) %>%
+  select(Batch, label_facet)
+batch_labels <- setNames(batch_stats$label_facet, batch_stats$Batch)
+
+# 5) Gráfico facetado por Batch ~ Gen, mostrando Mutado vs No Mutado
+ggplot(gene_summary, aes(x = Estado, y = n, fill = Estado)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    Batch ~ Gen,
+    labeller  = labeller(Batch = batch_labels),
+    switch    = "y",
+    drop      = FALSE
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Estado de mutación",
+    y     = "Número de pacientes",
+    title = "Frecuencia de mutaciones/traslocaciones clave por batch de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title        = element_text(face = "bold", size = 10),
+    strip.background  = element_rect(fill = "grey95", color = NA),
+    strip.text        = element_text(face = "bold", size = 9),
+    strip.placement   = "outside",
+    strip.text.y.left = element_text(angle = 0, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x       = element_text(angle = 45, hjust = 1),
+    plot.margin       = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) Aseguramos flags de disponibilidad bs1/bs2/bs3
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+# 1) Preparamos los datos largos para Mutacion.General
+mut_data <- merged_full %>%
+  pivot_longer(
+    cols      = c(has_bs1, has_bs2, has_bs3),
+    names_to  = "Batch",
+    values_to = "Disponible"
+  ) %>%
+  mutate(
+    Batch = recode(Batch,
+                   "has_bs1" = "bs1",
+                   "has_bs2" = "bs2",
+                   "has_bs3" = "bs3"),
+    Mut = Mutacion.General
+  ) %>%
+  filter(Disponible, !is.na(Mut))
+
+# 2) Contamos y completamos combinaciones faltantes
+mut_summary <- mut_data %>%
+  count(Batch, Mut) %>%
+  complete(
+    Batch = c("bs1","bs2","bs3"),
+    Mut   = c("No","Si"),
+    fill  = list(n = 0)
+  )
+
+# 3) Etiquetas de faltantes (reutilizamos batch_labels del gráfico anterior)
+#    Si no lo tienes en el entorno, vuelve a crearlo como antes.
+
+# 4) Gráfico facetado Batch ~
+ggplot(mut_summary, aes(x = Mut, y = n, fill = Mut)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    Batch ~ .,
+    labeller = labeller(Batch = batch_labels),
+    switch   = "y",
+    drop     = FALSE
+  ) +
+  scale_fill_brewer(palette = "Set2", name = "Mutación") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Mutación General",
+    y     = "Número de pacientes",
+    title = "Presencia de mutación/traslocación general por batch de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title        = element_text(face = "bold", size = 10),
+    strip.background  = element_rect(fill = "grey95", color = NA),
+    strip.text        = element_text(face = "bold", size = 9),
+    strip.placement   = "outside",
+    strip.text.y.left = element_text(angle = 0, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x       = element_text(angle = 45, hjust = 1),
+    plot.margin       = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+
+# Calculo de N por rangos de PD-L1
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) Aseguramos flags de disponibilidad bs1/bs2/bs3
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+# 1) Creamos categorías de PD.L1 en intervalos de 10%
+breaks <- seq(0, 100, by = 10)
+labels <- paste0(head(breaks, -1), "–", tail(breaks, -1), "%")
+merged_full <- merged_full %>%
+  mutate(
+    PD.L1_cat = cut(
+      PD.L1,
+      breaks = breaks,
+      labels = labels,
+      include.lowest = TRUE,
+      right = FALSE
+    )
+  )
+
+# 2) Preparamos datos largos para PD.L1_cat
+pd_data <- merged_full %>%
+  pivot_longer(
+    cols      = c(has_bs1, has_bs2, has_bs3),
+    names_to  = "Batch",
+    values_to = "Disponible"
+  ) %>%
+  mutate(
+    Batch = recode(Batch,
+                   "has_bs1" = "bs1",
+                   "has_bs2" = "bs2",
+                   "has_bs3" = "bs3")
+  ) %>%
+  filter(Disponible, !is.na(PD.L1_cat))
+
+# 3) Contamos y completamos combinaciones faltantes
+pd_summary <- pd_data %>%
+  count(Batch, PD.L1_cat) %>%
+  complete(
+    Batch     = c("bs1","bs2","bs3"),
+    PD.L1_cat = labels,
+    fill      = list(n = 0)
+  )
+
+# 4) Calculamos etiquetas de faltantes para cada batch
+total_n <- nrow(merged_full)
+batch_stats <- merged_full %>%
+  summarise(
+    bs1 = sum(has_bs1, na.rm = TRUE),
+    bs2 = sum(has_bs2, na.rm = TRUE),
+    bs3 = sum(has_bs3, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "Batch", values_to = "presentes") %>%
+  mutate(
+    faltantes    = total_n - presentes,
+    pct_faltante = round(faltantes/total_n * 100, 1),
+    label_facet  = paste0(
+      Batch, "\nFaltantes: ",
+      faltantes, "/", total_n,
+      " (", pct_faltante, "%)"
+    )
+  ) %>%
+  select(Batch, label_facet)
+batch_labels <- setNames(batch_stats$label_facet, batch_stats$Batch)
+
+# 5) Gráfico facetado Batch ~ PD.L1_cat
+ggplot(pd_summary, aes(x = PD.L1_cat, y = n, fill = PD.L1_cat)) +
+  geom_col(width = 0.8, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    Batch ~ .,
+    labeller = labeller(Batch = batch_labels),
+    switch   = "y",
+    drop     = FALSE
+  ) +
+  scale_fill_brewer(palette = "Set3") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "PD-L1 (%)",
+    y     = "Número de pacientes",
+    title = "Distribución de PD-L1 por rangos y batch de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 12),
+    strip.background   = element_rect(fill = "grey95", color = NA),
+    strip.text         = element_text(face = "bold", size = 9),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+# Datos pareados
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# 0) Asegúrate de tener las flags de disponibilidad
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+# 1) Calculamos los conteos y porcentajes de cada combinación
+total_n <- nrow(merged_full)
+combo_stats <- tibble(
+  combo = c(
+    "bs1 solo",
+    "bs1 + bs2",
+    "bs1 + bs2 + bs3",
+    "bs1 + bs3"
+  ),
+  n = c(
+    sum(merged_full$has_bs1 & !merged_full$has_bs2 & !merged_full$has_bs3, na.rm = TRUE),
+    sum(merged_full$has_bs1 & merged_full$has_bs2 & !merged_full$has_bs3, na.rm = TRUE),
+    sum(merged_full$has_bs1 & merged_full$has_bs2 & merged_full$has_bs3, na.rm = TRUE),
+    sum(merged_full$has_bs1 & merged_full$has_bs3 & !merged_full$has_bs2, na.rm = TRUE)
+  )
+) %>%
+  mutate(
+    # forzamos el orden deseado
+    combo = factor(combo, levels = c(
+      "bs1 solo",
+      "bs1 + bs2",
+      "bs1 + bs2 + bs3",
+      "bs1 + bs3"
+    )),
+    pct = n / total_n,
+    pct_label = percent(pct, accuracy = 0.1)
+  )
+
+# 2) Mostrar los resultados en consola
+print(combo_stats)
+
+# 3) Gráfico de barras con el orden especificado y n encima
+ggplot(combo_stats, aes(x = combo, y = pct, fill = combo)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 4) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  labs(
+    x     = "Combinación de batches",
+    y     = "Porcentaje de pacientes",
+    title = "Porcentaje y número de pacientes pareados por batch de TCR"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    plot.title       = element_text(face = "bold"),
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_blank()
+  )
+
+
+```
+
+## Calcular N de Progresión por datos pareados
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) Creamos los flags de disponibilidad bs1/bs2/bs3
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.))
+  )
+
+# 1) Definimos el grupo de pareado en función de bs1, bs2 y bs3
+merged_full <- merged_full %>%
+  mutate(
+    PareadoGroup = case_when(
+      has_bs1 & !has_bs2 & !has_bs3             ~ "bs1 solo",
+      has_bs1 &  has_bs2 & !has_bs3             ~ "bs1 + bs2",
+      has_bs1 &  has_bs2 &  has_bs3             ~ "bs1 + bs2 + bs3",
+      has_bs1 & !has_bs2 &  has_bs3             ~ "bs1 + bs3",
+      TRUE                                       ~ NA_character_
+    ),
+    PareadoGroup = factor(
+      PareadoGroup,
+      levels = c("bs1 solo","bs1 + bs2","bs1 + bs2 + bs3","bs1 + bs3")
+    )
+  ) %>%
+  filter(!is.na(PareadoGroup))   # mantenemos solo los con bs1
+
+# 2) Llevamos a formato largo las variables de progresión
+plot_data_group <- merged_full %>%
+  pivot_longer(
+    cols      = c(Prog.3.meses, Prog.6.meses, Prog.12.meses, Progresión),
+    names_to  = "Periodo",
+    values_to = "Progresion"
+  ) %>%
+  mutate(
+    Periodo = recode(Periodo,
+      "Prog.3.meses"  = "3 meses",
+      "Prog.6.meses"  = "6 meses",
+      "Prog.12.meses" = "12 meses",
+      "Progresión"    = "24 meses"
+    ),
+    Periodo = factor(Periodo, levels = c("3 meses","6 meses","12 meses","24 meses"))
+  )
+
+# 3) Resumimos conteos por grupo/periodo/progresión
+plot_summary_group <- plot_data_group %>%
+  count(PareadoGroup, Periodo, Progresion)
+
+# 4) Dibujamos el gráfico facetado por PareadoGroup ~ Periodo
+ggplot(plot_summary_group, aes(x = Progresion, y = n, fill = Progresion)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    PareadoGroup ~ Periodo,
+    switch = "y"
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  scale_fill_brewer(
+    palette = "Set2",
+    name    = "Progresión",
+    labels  = c("No","Sí")
+  ) +
+  labs(
+    x     = "¿Progresión?",
+    y     = "Número de pacientes",
+    title = "Progresión según combinaciones de batches de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title           = element_text(face = "bold", size = 12),
+    panel.grid.major.y   = element_line(color = "grey90"),
+    panel.grid.major.x   = element_blank(),
+    strip.placement      = "outside",
+    strip.text.y.left    = element_text(angle = 0, hjust = 1, face = "bold"),
+    axis.text.x          = element_text(angle = 45, hjust = 1),
+    plot.margin          = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+# Calcular N por presencia de lineas previas
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) (Re)creamos flags de disponibilidad y el grupo de pareado
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.)),
+    PareadoGroup = case_when(
+      has_bs1 & !has_bs2 & !has_bs3  ~ "bs1 solo",
+      has_bs1 &  has_bs2 & !has_bs3  ~ "bs1 + bs2",
+      has_bs1 &  has_bs2 &  has_bs3  ~ "bs1 + bs2 + bs3",
+      has_bs1 & !has_bs2 &  has_bs3  ~ "bs1 + bs3",
+      TRUE                            ~ NA_character_
+    ),
+    PareadoGroup = factor(
+      PareadoGroup,
+      levels = c("bs1 solo","bs1 + bs2","bs1 + bs2 + bs3","bs1 + bs3")
+    ),
+    LinesPrevias = factor(`Nº.de.líneas.previas`, levels = c("0","1","2","3"))
+  ) %>%
+  filter(!is.na(PareadoGroup))
+
+# 1) Contamos pacientes por PareadoGroup y LinesPrevias
+plot_summary_lp <- merged_full %>%
+  count(PareadoGroup, LinesPrevias)
+
+# 2) Gráfico facetado por PareadoGroup
+ggplot(plot_summary_lp, aes(x = LinesPrevias, y = n, fill = LinesPrevias)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    PareadoGroup ~ .,
+    switch = "y"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Número de líneas previas",
+    y     = "Número de pacientes",
+    title = "Distribución de líneas previas por combinación de batches de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title           = element_text(face = "bold", size = 10),
+    strip.placement      = "outside",
+    strip.text.y.left    = element_text(angle = 0, hjust = 1, face = "bold"),
+    axis.text.x          = element_text(angle = 45, hjust = 1),
+    panel.grid.major.y   = element_line(color = "grey90"),
+    panel.grid.major.x   = element_blank(),
+    plot.margin          = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+# Calcular N por combinación de batches y por numero de lineas previas categorizadas
+```{r}
+library(dplyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) (Re)creamos flags de disponibilidad y el grupo de pareado
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.)),
+    # definimos el grupo de pareado igual que antes
+    PareadoGroup = case_when(
+      has_bs1 & !has_bs2 & !has_bs3  ~ "bs1 solo",
+      has_bs1 &  has_bs2 & !has_bs3  ~ "bs1 + bs2",
+      has_bs1 &  has_bs2 &  has_bs3  ~ "bs1 + bs2 + bs3",
+      has_bs1 & !has_bs2 &  has_bs3  ~ "bs1 + bs3",
+      TRUE                            ~ NA_character_
+    ),
+    PareadoGroup = factor(
+      PareadoGroup,
+      levels = c("bs1 solo","bs1 + bs2","bs1 + bs2 + bs3","bs1 + bs3")
+    )
+  ) %>%
+  filter(!is.na(PareadoGroup))
+
+# 1) Contamos el número de pacientes por grupo de pareado y categoría de líneas previas
+plot_summary_lp_cat <- merged_full %>%
+  # aseguramos que LíneasPrevias_Cat ya exista y esté factorizada
+  count(PareadoGroup, LíneasPrevias_Cat)
+
+# 2) Gráfico facetado por PareadoGroup
+ggplot(plot_summary_lp_cat, aes(x = LíneasPrevias_Cat, y = n, fill = LíneasPrevias_Cat)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    PareadoGroup ~ .,
+    switch = "y"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Categoría de líneas previas",
+    y     = "Número de pacientes",
+    title = "Distribución de líneas previas por combinación de batches de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title           = element_text(face = "bold", size = 10),
+    strip.placement      = "outside",
+    strip.text.y.left    = element_text(angle = 0, hjust = 1, face = "bold"),
+    axis.text.x          = element_text(angle = 45, hjust = 1),
+    panel.grid.major.y   = element_line(color = "grey90"),
+    panel.grid.major.x   = element_blank(),
+    plot.margin          = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+# Calcular N por combinación de batches y por tipo de terapia
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) Recreamos flags y definimos el grupo de pareado
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.)),
+    PareadoGroup = case_when(
+      has_bs1 & !has_bs2 & !has_bs3  ~ "bs1 solo",
+      has_bs1 &  has_bs2 & !has_bs3  ~ "bs1 + bs2",
+      has_bs1 &  has_bs2 &  has_bs3  ~ "bs1 + bs2 + bs3",
+      has_bs1 & !has_bs2 &  has_bs3  ~ "bs1 + bs3",
+      TRUE                            ~ NA_character_
+    ),
+    PareadoGroup = factor(
+      PareadoGroup,
+      levels = c("bs1 solo","bs1 + bs2","bs1 + bs2 + bs3","bs1 + bs3")
+    )
+  ) %>%
+  filter(!is.na(PareadoGroup))
+
+# 1) Preparamos y contamos IO.Tipo.General por grupo de pareado
+plot_summary_io_gen_grp <- merged_full %>%
+  filter(!is.na(IO.Tipo.General)) %>%
+  count(PareadoGroup, IO.Tipo.General) %>%
+  complete(
+    PareadoGroup,
+    IO.Tipo.General = c(
+      "Inmunoterapia",
+      "Inmunoterapia + quimioterapia",
+      "Inmunoterapia + antiangiogénico",
+      "IO adyuvante no met"
+    ),
+    fill = list(n = 0)
+  )
+
+# 2) Gráfico facetado PareadoGroup ~
+ggplot(plot_summary_io_gen_grp,
+       aes(x = IO.Tipo.General, y = n, fill = IO.Tipo.General)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    PareadoGroup ~ .,
+    switch = "y"
+  ) +
+  scale_fill_brewer(
+    palette = "Set2",
+    name    = "Esquema IO"
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.2))
+  ) +
+  labs(
+    x     = "Esquema de Inmunoterapia",
+    y     = "Número de pacientes",
+    title = "Distribución de terapia según combinación de batches de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 10),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1, face = "bold"),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+# Calcular N por tipo de terapia Adyuvante
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(RColorBrewer)
+
+# 0) Creamos flags de disponibilidad y definimos los grupos pareados
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.)),
+    PareadoGroup = case_when(
+      has_bs1 & !has_bs2 & !has_bs3 ~ "bs1 solo",
+      has_bs1 &  has_bs2 & !has_bs3 ~ "bs1 + bs2",
+      has_bs1 &  has_bs2 &  has_bs3 ~ "bs1 + bs2 + bs3",
+      has_bs1 & !has_bs2 &  has_bs3 ~ "bs1 + bs3",
+      TRUE                           ~ NA_character_
+    ),
+    PareadoGroup = factor(
+      PareadoGroup,
+      levels = c("bs1 solo", "bs1 + bs2", "bs1 + bs2 + bs3", "bs1 + bs3")
+    )
+  ) %>%
+  filter(!is.na(PareadoGroup))
+
+# 1) Contamos por grupo pareado y Quimio.Radio.Adj
+all_qra <- levels(merged_full$Quimio.Radio.Adj)
+qradj_summary <- merged_full %>%
+  filter(!is.na(Quimio.Radio.Adj)) %>%
+  count(PareadoGroup, Quimio.Radio.Adj) %>%
+  complete(
+    PareadoGroup,
+    Quimio.Radio.Adj = all_qra,
+    fill = list(n = 0)
+  )
+
+# 2) Gráfico facetado por PareadoGroup
+ggplot(qradj_summary,
+       aes(x = Quimio.Radio.Adj, y = n, fill = Quimio.Radio.Adj)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(PareadoGroup ~ ., switch = "y", drop = FALSE) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Esquema adyuvante",
+    y     = "Número de pacientes",
+    title = "Distribución de terapia adyuvante por combinaciones de batches de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 10),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1, face = "bold"),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+
+```
+# Calculo de N por mutación y combinación de batches de TCR
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) Recreamos flags y definimos grupos pareados
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.)),
+    PareadoGroup = case_when(
+      has_bs1 & !has_bs2 & !has_bs3 ~ "bs1 solo",
+      has_bs1 &  has_bs2 & !has_bs3 ~ "bs1 + bs2",
+      has_bs1 &  has_bs2 &  has_bs3 ~ "bs1 + bs2 + bs3",
+      has_bs1 & !has_bs2 &  has_bs3 ~ "bs1 + bs3",
+      TRUE                           ~ NA_character_
+    ),
+    PareadoGroup = factor(
+      PareadoGroup,
+      levels = c("bs1 solo","bs1 + bs2","bs1 + bs2 + bs3","bs1 + bs3")
+    )
+  ) %>%
+  filter(!is.na(PareadoGroup))
+
+# 1) Genes de interés
+genes_want    <- c("EGFR", "ALK", "ROS1", "RET", "BRAF..V600.", "KRAS")
+genes_present <- intersect(genes_want, names(merged_full))
+
+# 2) Ponemos en formato largo y ajustamos "Estado" según cada gen
+gene_summary_grp <- merged_full %>%
+  pivot_longer(
+    cols     = all_of(genes_present),
+    names_to = "Gen",
+    values_to= "Estado"
+  ) %>%
+  mutate(
+    # Para los genes translocados, recogemos tanto "Si"/"No" como "Translocado"/"No translocado"
+    Estado = case_when(
+      Gen %in% c("ALK","RET","ROS1") &
+        Estado %in% c("Si","sí","YES","Translocado")      ~ "Translocado",
+      Gen %in% c("ALK","RET","ROS1") &
+        Estado %in% c("No","NO","No translocado")         ~ "No translocado",
+      # Para los genes mutados, mantenemos "Mutado"/"No Mutado"
+      Gen %in% c("EGFR","KRAS","BRAF..V600.")              ~ Estado,
+      TRUE                                                 ~ NA_character_
+    ),
+    # Unificamos niveles y orden
+    Estado = factor(
+      Estado,
+      levels = c("No Mutado","Mutado","No translocado","Translocado")
+    )
+  ) %>%
+  filter(!is.na(Estado)) %>%
+  # 3) Contamos y completamos combinaciones faltantes
+  count(PareadoGroup, Gen, Estado) %>%
+  complete(
+    PareadoGroup,
+    Gen    = genes_present,
+    Estado = levels(Estado),
+    fill   = list(n = 0)
+  )
+
+# 4) Gráfico facetado PareadoGroup ~ Gen
+ggplot(gene_summary_grp, aes(x = Estado, y = n, fill = Estado)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    PareadoGroup ~ Gen,
+    switch = "y",
+    drop   = FALSE
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Estado genético",
+    y     = "Número de pacientes",
+    title = "Mutaciones y translocaciones clave por combinación de batches de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 10),
+    strip.background   = element_rect(fill = "grey95", color = NA),
+    strip.text         = element_text(face = "bold", size = 9),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) Recreamos flags de disponibilidad y definimos el grupo de pareado
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.)),
+    PareadoGroup = case_when(
+      has_bs1 & !has_bs2 & !has_bs3 ~ "bs1 solo",
+      has_bs1 &  has_bs2 & !has_bs3 ~ "bs1 + bs2",
+      has_bs1 &  has_bs2 &  has_bs3 ~ "bs1 + bs2 + bs3",
+      has_bs1 & !has_bs2 &  has_bs3 ~ "bs1 + bs3",
+      TRUE                           ~ NA_character_
+    ),
+    PareadoGroup = factor(
+      PareadoGroup,
+      levels = c("bs1 solo","bs1 + bs2","bs1 + bs2 + bs3","bs1 + bs3")
+    )
+  ) %>%
+  filter(!is.na(PareadoGroup))  # sólo los que tienen bs1
+
+# 1) Contamos la Mutación.General por grupo de pareado
+mut_summary_pg <- merged_full %>%
+  filter(!is.na(Mutacion.General)) %>%
+  count(PareadoGroup, Mutacion.General) %>%
+  complete(
+    PareadoGroup,
+    Mutacion.General = c("No", "Si", "Desconocido"),
+    fill = list(n = 0)
+  )
+
+# 2) Dibujamos el gráfico facetado por PareadoGroup
+ggplot(mut_summary_pg, aes(x = Mutacion.General, y = n, fill = Mutacion.General)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    PareadoGroup ~ .,
+    switch = "y",
+    drop   = FALSE
+  ) +
+  scale_fill_brewer(palette = "Set2", name = "Mutación general") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "Mutación General",
+    y     = "Número de pacientes",
+    title = "Presencia de mutación/traslocación general según combinación de batches de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 9),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1, face = "bold"),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+# Calculo de N por rangos de PD-L1 y combinación de batches
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 0) Recreamos flags y definimos el grupo de pareado
+merged_full <- merged_full %>%
+  mutate(
+    has_bs1 = if_any(ends_with("_bs1_rel"), ~ !is.na(.)),
+    has_bs2 = if_any(ends_with("_bs2_rel"), ~ !is.na(.)),
+    has_bs3 = if_any(ends_with("_bs3_rel"), ~ !is.na(.)),
+    PareadoGroup = case_when(
+      has_bs1 & !has_bs2 & !has_bs3 ~ "bs1 solo",
+      has_bs1 &  has_bs2 & !has_bs3 ~ "bs1 + bs2",
+      has_bs1 &  has_bs2 &  has_bs3 ~ "bs1 + bs2 + bs3",
+      has_bs1 & !has_bs2 &  has_bs3 ~ "bs1 + bs3",
+      TRUE                           ~ NA_character_
+    ),
+    PareadoGroup = factor(
+      PareadoGroup,
+      levels = c("bs1 solo","bs1 + bs2","bs1 + bs2 + bs3","bs1 + bs3")
+    )
+  ) %>%
+  filter(!is.na(PareadoGroup))
+
+# 1) Creamos categorías de PD.L1 en intervalos de 10%
+breaks <- seq(0, 100, by = 10)
+labels <- paste0(head(breaks, -1), "–", tail(breaks, -1), "%")
+merged_full <- merged_full %>%
+  mutate(
+    PD.L1_cat = cut(
+      PD.L1,
+      breaks = breaks,
+      labels = labels,
+      include.lowest = TRUE,
+      right = FALSE
+    )
+  )
+
+# 2) Contamos pacientes por PareadoGroup × PD.L1_cat
+pd_summary_pg <- merged_full %>%
+  filter(!is.na(PD.L1_cat)) %>%
+  count(PareadoGroup, PD.L1_cat) %>%
+  complete(
+    PareadoGroup,
+    PD.L1_cat = labels,
+    fill = list(n = 0)
+  )
+
+# 3) Gráfico facetado por PareadoGroup
+ggplot(pd_summary_pg, aes(x = PD.L1_cat, y = n, fill = PD.L1_cat)) +
+  geom_col(width = 0.8, show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  facet_grid(
+    PareadoGroup ~ .,
+    switch = "y",
+    drop   = FALSE
+  ) +
+  scale_fill_brewer(palette = "Set3") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x     = "PD-L1 (%)",
+    y     = "Número de pacientes",
+    title = "Distribución de PD-L1 por rangos y combinación de batches de TCR"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 8),
+    strip.background   = element_rect(fill = "grey95", color = NA),
+    strip.text         = element_text(face = "bold", size = 9),
+    strip.placement    = "outside",
+    strip.text.y.left  = element_text(angle = 0, hjust = 1),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    plot.margin        = margin(t = 10, r = 10, b = 10, l = 40)
+  )
+
+```
+
+```{r}
+# Eliminamos variables inutiles
+merged_full$X <- NULL
+merged_full$...1 <- NULL
+```
+
+
+```{r}
+write.csv(merged_full, file = "/home/agombau/modelo_pipeline/procesed_data/dataset_full_model.csv")
+```
+

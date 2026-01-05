@@ -1,0 +1,261 @@
+---
+title: "No supervisados"
+author: "Alejandro Gombau Garcia"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+# Preparación del entorno
+
+```{r}
+# Librerias
+library(dplyr)
+library(tidyverse)    # type_convert, across...
+library(immunarch)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(factoextra)
+library(stats)
+library(dunn.test)
+library(patchwork)
+
+```
+
+# Carga de los datos
+
+```{r}
+# Codigo para cargar el entorno
+
+## Importación y transformación de datos ##
+merged_full <- read_csv(
+  "/home/agombau/modelo_pipeline/procesed_data/dataset_full_model.csv",
+  col_types = cols(.default = "c")
+) %>%
+  type_convert() %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  dplyr::select(-...1)
+# En este fragmento primero cargamos todas las muestras del directorio con repLoad(), luego construimos un vector lógico que indica para cada archivo si el código de paciente (los dos primeros bloques antes de “-”) aparece en merged_full\$Paciente.code. Filtramos la lista de datos para quedarnos solo con esas muestras y, finalmente, renombramos cada entrada usando los tres primeros componentes del nombre de archivo y sustituimos los valores NA por cero.
+files <- list.files("/home/agombau/data/Procesados", pattern = "\\.results\\.tsv$", full.names = TRUE)
+keep <- sapply(basename(files), function(f) {
+  partes <- strsplit(f, "-")[[1]]
+  paciente <- paste(partes[1], partes[2], sep = "-")
+  paciente %in% merged_full$Paciente.code
+})
+files_to_load <- files[keep]
+datos <- repLoad(files_to_load)
+for (j in seq_along(datos$data)) {
+  nombre_archivo <- names(datos$data)[j]
+  partes <- strsplit(nombre_archivo, "-")[[1]]
+  muestra <- paste(partes[1], partes[2], partes[3], sep = "-")
+  names(datos$data)[j] <- muestra
+  datos$data[[j]][is.na(datos$data[[j]])] <- 0
+}
+# En este fragmento extraemos de cada nombre de muestra los dos primeros bloques separados por “-” (que corresponden al código de paciente), los unimos de nuevo con un “-” y calculamos la longitud del vector de valores únicos para obtener el número total de pacientes distintos.
+
+# Extraer los códigos de paciente de cada nombre de muestra
+patient_codes <- sapply(names(datos$data), function(nm) {
+  # Dividir el nombre de muestra en partes usando el guion como separador
+  partes <- strsplit(nm, "-")[[1]]
+  # Unir las dos primeras partes para obtener el código de paciente
+  paste(partes[1], partes[2], sep = "-")
+})
+
+# Obtener el número de pacientes distintos
+n_pacientes <- length(unique(patient_codes))
+
+# Mostrar el resultado
+cat("Número de pacientes: ", n_pacientes, "\n")
+# generar tabla con número de pacientes únicos por grupo
+patient_codes <- sub("-\\d+$", "", names(datos$data))
+groups <- ifelse(grepl("1$", names(datos$data)), "BS1",
+                 ifelse(grepl("2$", names(datos$data)), "BS2", "BS3"))
+df <- data.frame(Paciente = patient_codes, Grupo = groups)
+
+tabla <- aggregate(Paciente ~ Grupo, data = df, FUN = function(x) length(unique(x)))
+names(tabla)[2] <- "Número de pacientes"
+
+# mostrar la tabla
+tabla
+```
+
+# BS1
+
+```{r}
+
+# Definir lista de exclusión
+vars_exclude <- c(
+  "Paciente.code", "Paciente", "Progresión", "RT.QT.Radical", "Quimioterapia.adyuvante", 
+  "Radioterapia.adyuvante", "Exitus", "PFS..m.", "PFS..d.", 
+  "Follow.Up..d.", "Fecha.de.nacimiento", "BS1.BS2", "Tiempo.hasta.inicio.IO", 
+  "Tiempo.hasta.inicio.IO.metas", "ROS1" ,"EGFR", "ALK", "RET", "KRAS", "BRAF..V600.", 
+  "has_bs1", "has_bs2", "has_bs3", 
+  "Fecha.de.inicio.IO", "Fecha.de.diagnóstico", 
+  "Fecha.de.diagnóstico.de.enfermedad.metastática",
+  "Fecha.de.inicio.IO..metastáticos.",
+  "Metastasis_no_diag", "Prog.12.meses",
+  "IO_no_inicio", "MetaIO_no_inicio", "Diagnostico_no_reg", 
+  "PD.L1_cat", "PareadoGroup", "LinesPrevias"
+)
+
+# Preparar Datos (Solo BS1 Relativos)
+df_pca_prep <- merged_full %>%
+  select(-matches("_bs2|_bs3")) %>% 
+  select(-matches("_abs")) %>%      
+  select(-any_of(vars_exclude)) %>% 
+  select(Prog.6.meses, everything()) %>% 
+  drop_na() %>%
+  
+  # Forzamos que el factor tenga el orden: 1º Sí, 2º No
+  mutate(
+    Prog.6.meses = factor(Prog.6.meses, levels = c("Sí", "No")),
+    # Hacemos lo mismo para 3 meses si existe en el dataset
+    Prog.3.meses = if("Prog.3.meses" %in% names(.)) factor(Prog.3.meses, levels = c("Sí", "No")) else NULL
+  )
+
+cat("N para PCA:", nrow(df_pca_prep), "pacientes. Variables:", ncol(df_pca_prep)-2, "\n")
+
+# Ejecutar PCA
+pca_matrix <- df_pca_prep %>%
+  select(where(is.numeric))
+
+pca_res <- prcomp(pca_matrix, center = TRUE, scale. = TRUE)
+
+# Preparar Dataframes
+# Varianza
+var_explained <- data.frame(
+  PC = paste0("PC", 1:10),
+  Var = (pca_res$sdev^2 / sum(pca_res$sdev^2) * 100)[1:10]
+)
+
+# Scores
+pca_scores <- as.data.frame(pca_res$x) %>%
+  bind_cols(df_pca_prep %>% select(contains("Prog"))) 
+
+# Generación de Gráficos
+
+# Gráfico A: Scree Plot
+p_scree <- ggplot(var_explained, aes(x = reorder(PC, -Var), y = Var)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  geom_text(aes(label = round(Var, 1)), vjust = -0.5, size = 3) +
+  labs(title = "Varianza explicada por componente principal", y = "% Varianza", x = "") +
+  theme_minimal()
+
+# Definimos los colores fijos para que no haya sustos
+mis_colores <- c("Sí" = "#E7B800", "No" = "#2E9FDF")
+
+# Gráfico B: PCA por Progresión 3 Meses
+p_pca_3m <- ggplot(pca_scores, aes(x = PC1, y = PC2, color = Prog.3.meses)) +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(level = 0.95, show.legend = FALSE, linetype = 2) +
+  scale_color_manual(values = mis_colores) + # Aplicamos colores forzados
+  labs(title = "PCA: Progresión 3 Meses", x = "PC1", y = "PC2") +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank()) # Quitamos título leyenda para limpieza
+
+# Gráfico C: PCA por Progresión 6 Meses
+p_pca_6m <- ggplot(pca_scores, aes(x = PC1, y = PC2, color = Prog.6.meses)) +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(level = 0.95, show.legend = FALSE, linetype = 2) +
+  scale_color_manual(values = mis_colores) + # Aplicamos colores forzados
+  labs(title = "PCA: Progresión 6 Meses", x = "PC1", y = "PC2") +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+# Layout Final
+design <- "
+AAAA
+BBCC
+"
+combined_plot <- p_scree / (p_pca_3m + p_pca_6m) +
+  plot_annotation(title = "Análisis PCA (Datos Basales)")
+
+print(combined_plot)
+```
+
+# Deltas
+
+```{r}
+
+# Variables target a conservar
+targets_visualizacion <- c("Prog.3.meses", "Prog.6.meses")
+
+# Preparar Datos (Deltas)
+df_pca_delta <- delta_merged_full %>%
+  # Limpieza técnica
+  select(-matches("_bs2|_bs3")) %>% 
+  select(-matches("_abs")) %>%      
+  
+  # Eliminar lista negra clínica conservando targets
+  select(-any_of(setdiff(vars_exclude, targets_visualizacion))) %>% 
+  
+  # Limpieza de NAs y ordenamiento de factores
+  filter(!is.na(Prog.6.meses)) %>%
+  drop_na() %>%
+  
+  # --- BLOQUE DE ORDENAMIENTO ---
+  mutate(
+    Prog.6.meses = factor(Prog.6.meses, levels = c("Sí", "No")),
+    # Aplicamos lo mismo a 3 meses si la columna existe
+    Prog.3.meses = if("Prog.3.meses" %in% names(.)) factor(Prog.3.meses, levels = c("Sí", "No")) else NULL
+  )
+
+cat("Dimensiones PCA (Deltas):", nrow(df_pca_delta), "pacientes. Variables:", ncol(df_pca_delta), "\n")
+
+# Ejecutar PCA
+pca_matrix_delta <- df_pca_delta %>%
+  select(where(is.numeric)) %>%
+  select(-any_of(targets_visualizacion)) %>% # Sacar targets del cálculo
+  select(where(~ var(.) > 0))                # Sacar varianza cero
+
+pca_res_delta <- prcomp(pca_matrix_delta, center = TRUE, scale. = TRUE)
+
+# Dataframes para Plotting
+# Scree Plot
+var_explained_delta <- data.frame(
+  PC = paste0("PC", 1:10),
+  Var = (pca_res_delta$sdev^2 / sum(pca_res_delta$sdev^2) * 100)[1:10]
+)
+
+# Scores
+pca_scores_delta <- as.data.frame(pca_res_delta$x) %>%
+  bind_cols(df_pca_delta %>% select(any_of(targets_visualizacion)))
+
+# Generar Gráficos
+
+# Definimos los colores estandarizados
+mis_colores <- c("Sí" = "#E7B800", "No" = "#2E9FDF")
+
+# Gráfico A: Scree Plot (Mantenemos el naranja rojizo para distinguir de BS1)
+p_scree_d <- ggplot(var_explained_delta, aes(x = reorder(PC, -Var), y = Var)) +
+  geom_col(fill = "#E76F51", alpha = 0.8) + 
+  geom_text(aes(label = round(Var, 1)), vjust = -0.5, size = 3) +
+  labs(title = "Varianza Explicada (Deltas)", y = "% Varianza", x = "") +
+  theme_minimal()
+
+# Gráfico B: PCA coloreado por Prog.3.meses
+p_pca_3m_d <- ggplot(pca_scores_delta, aes(x = PC1, y = PC2, color = Prog.3.meses)) +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(level = 0.95, show.legend = FALSE, linetype = 2) +
+  scale_color_manual(values = mis_colores) + # Colores forzados
+  labs(title = "PCA Deltas: Progresión 3 Meses",        x = "PC1", y = "PC2") +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+# Gráfico C: PCA coloreado por Prog.6.meses
+p_pca_6m_d <- ggplot(pca_scores_delta, aes(x = PC1, y = PC2, color = Prog.6.meses)) +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(level = 0.95, show.legend = FALSE, linetype = 2) +
+  scale_color_manual(values = mis_colores) + # Colores forzados
+  labs(title = "PCA Deltas: Progresión 6 Meses",        x = "PC1", y = "PC2") +
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+# Layout Final
+combined_plot_delta <- p_scree_d / (p_pca_3m_d + p_pca_6m_d) +
+  plot_annotation(title = "Dinámica del Repertorio (Análisis de Deltas)")
+
+print(combined_plot_delta)
+```
+
+

@@ -1,0 +1,379 @@
+---
+title: "Modelos machine learning"
+author: "Alejandro Gombau Garcia"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+# Peparación del entorno
+
+```{r}
+# Librerias
+library(dplyr)
+library(tidyverse)    # type_convert, across...
+library(immunarch)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(factoextra)
+library(stats)
+library(dunn.test)
+
+# Librerias para ML
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(randomForest)
+
+```
+
+# Carga de los datos
+
+```{r}
+# Codigo para cargar el entorno
+
+## Importación y transformación de datos ##
+merged_full <- read_csv(
+  "/home/agombau/modelo_pipeline/procesed_data/dataset_full_model.csv",
+  col_types = cols(.default = "c")
+) %>%
+  type_convert() %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  dplyr::select(-...1)
+# En este fragmento primero cargamos todas las muestras del directorio con repLoad(), luego construimos un vector lógico que indica para cada archivo si el código de paciente (los dos primeros bloques antes de “-”) aparece en merged_full\$Paciente.code. Filtramos la lista de datos para quedarnos solo con esas muestras y, finalmente, renombramos cada entrada usando los tres primeros componentes del nombre de archivo y sustituimos los valores NA por cero.
+files <- list.files("/home/agombau/data/Procesados", pattern = "\\.results\\.tsv$", full.names = TRUE)
+keep <- sapply(basename(files), function(f) {
+  partes <- strsplit(f, "-")[[1]]
+  paciente <- paste(partes[1], partes[2], sep = "-")
+  paciente %in% merged_full$Paciente.code
+})
+files_to_load <- files[keep]
+datos <- repLoad(files_to_load)
+for (j in seq_along(datos$data)) {
+  nombre_archivo <- names(datos$data)[j]
+  partes <- strsplit(nombre_archivo, "-")[[1]]
+  muestra <- paste(partes[1], partes[2], partes[3], sep = "-")
+  names(datos$data)[j] <- muestra
+  datos$data[[j]][is.na(datos$data[[j]])] <- 0
+}
+# En este fragmento extraemos de cada nombre de muestra los dos primeros bloques separados por “-” (que corresponden al código de paciente), los unimos de nuevo con un “-” y calculamos la longitud del vector de valores únicos para obtener el número total de pacientes distintos.
+
+# Extraer los códigos de paciente de cada nombre de muestra
+patient_codes <- sapply(names(datos$data), function(nm) {
+  # Dividir el nombre de muestra en partes usando el guion como separador
+  partes <- strsplit(nm, "-")[[1]]
+  # Unir las dos primeras partes para obtener el código de paciente
+  paste(partes[1], partes[2], sep = "-")
+})
+
+# Obtener el número de pacientes distintos
+n_pacientes <- length(unique(patient_codes))
+
+# Mostrar el resultado
+cat("Número de pacientes: ", n_pacientes, "\n")
+# generar tabla con número de pacientes únicos por grupo
+patient_codes <- sub("-\\d+$", "", names(datos$data))
+groups <- ifelse(grepl("1$", names(datos$data)), "BS1",
+                 ifelse(grepl("2$", names(datos$data)), "BS2", "BS3"))
+df <- data.frame(Paciente = patient_codes, Grupo = groups)
+
+tabla <- aggregate(Paciente ~ Grupo, data = df, FUN = function(x) length(unique(x)))
+names(tabla)[2] <- "Número de pacientes"
+
+# mostrar la tabla
+tabla
+```
+
+Estas son las variables que se han excluido explícitamente del análisis para evitar el data leakage (fugas de información futura como la PFS o estado vital) y eliminar identificadores o metadatos técnicos:
+
+`Paciente.code, Paciente, Progresión, Exitus, PFS..m., PFS..d., Follow.Up..d., Fecha.de.nacimiento, BS1.BS2, Tiempo.hasta.inicio.IO, Tiempo.hasta.inicio.IO.metas, EGFR, ALK, RET, BRAF..V600., has_bs1, has_bs2, has_bs3, Fecha.de.inicio.IO, Fecha.de.diagnóstico, Fecha.de.diagnóstico.de.enfermedad.metastática, Fecha.de.inicio.IO..metastáticos., Metastasis_no_diag, Prog.3.meses, Prog.12.meses, IO_no_inicio, MetaIO_no_inicio, Diagnostico_no_reg, PD.L1_cat, PareadoGroup y LinesPrevias.`
+
+## Decision tree con datos de BS1
+
+
+```{r}
+
+# Definir variables a excluir
+vars_exclude <- c(
+  "Paciente.code", "Paciente", "Progresión", "Exitus", "PFS..m.", "PFS..d.", 
+  "Follow.Up..d.", "Fecha.de.nacimiento", "BS1.BS2", "Tiempo.hasta.inicio.IO", 
+  "Tiempo.hasta.inicio.IO.metas", "EGFR", "ALK", "RET", "BRAF..V600.", 
+  "has_bs1", "has_bs2", "has_bs3", 
+  "Fecha.de.inicio.IO", "Fecha.de.diagnóstico", 
+  "Fecha.de.diagnóstico.de.enfermedad.metastática",
+  "Fecha.de.inicio.IO..metastáticos.",
+  "Metastasis_no_diag", "Prog.3.meses", "Prog.12.meses",
+  "IO_no_inicio", "MetaIO_no_inicio", "Diagnostico_no_reg", 
+  "PD.L1_cat", "PareadoGroup", "LinesPrevias"
+)
+
+# Preparar dataset
+df_tree <- merged_full %>%
+  select(-matches("_bs2|_bs3")) %>%      # Eliminar tiempos futuros/pasados
+  select(-matches("_bs1_abs")) %>%       # Eliminar absolutos
+  select(-any_of(vars_exclude)) %>%      # Eliminar lista negra
+  filter(Prog.6.meses %in% c("No", "Sí")) %>%
+  mutate(Prog.6.meses = factor(Prog.6.meses, levels = c("No", "Sí")))
+
+# Entrenar Árbol de Decisión
+# Ajustamos maxdepth=3 y cp=0.03 para evitar un árbol gigante y "apelotonado"
+set.seed(123)
+tree_model <- rpart(Prog.6.meses ~ ., 
+                    data = df_tree, 
+                    method = "class",
+                    control = rpart.control(cp = 0.03, maxdepth = 3, minbucket = 5))
+
+# Visualización Mejorada
+# tweak=1.2 aumenta el tamaño del texto
+# fallen.leaves=FALSE ayuda a que no se solapen abajo
+rpart.plot(tree_model, 
+           type = 2, 
+           extra = 104, 
+           under = TRUE, 
+           tweak = 1.2, 
+           box.palette = "BuOr",
+           shadow.col = "gray",
+           main = "Árbol Predictivo: Progresión 6 Meses")
+
+# Generar Matriz de Confusión
+predicciones <- predict(tree_model, df_tree, type = "class")
+conf_matrix <- confusionMatrix(predicciones, df_tree$Prog.6.meses)
+
+cat("\n--- Matriz de Confusión y Estadísticas ---\n")
+print(conf_matrix)
+
+# VALIDACION CRUZADA
+# Preparar el dataset SIN na.omit()
+df_tree_full <- merged_full %>%
+  dplyr::select(-matches("_bs2|_bs3")) %>%      
+  dplyr::select(-matches("_bs1_abs")) %>%       
+  dplyr::select(-any_of(vars_exclude)) %>%      
+  filter(Prog.6.meses %in% c("No", "Sí")) %>%
+  mutate(Prog.6.meses = factor(Prog.6.meses, levels = c("No", "Sí")))
+  # ¡IMPORTANTE! Hemos quitado na.omit()
+
+cat("Número de pacientes para el modelo:", nrow(df_tree_full), "\n")
+
+#  Configurar Cross-Validation
+# Usamos 'na.action = na.pass' para que Caret no borre filas con NAs
+set.seed(123)
+train_control <- trainControl(
+  method = "repeatedcv", 
+  number = 5,       
+  repeats = 10,     
+  search = "grid"
+)
+
+# Entrenar modelo
+cat("Entrenando modelo con validación cruzada (usando todos los pacientes)...\n")
+cv_model <- train(
+  Prog.6.meses ~ ., 
+  data = df_tree_full, 
+  method = "rpart", 
+  trControl = train_control,
+  tuneLength = 10,
+  na.action = na.pass # Clave: Permitir NAs
+)
+
+# Resultados Reales
+print(cv_model)
+cat("\n--- Accuracy Real Estimada (CV) ---\n")
+print(max(cv_model$results$Accuracy))
+```
+
+## Decision tree con datos de delta
+
+
+```{r}
+
+# ---------------------------------------------------------
+# PREPARACIÓN DEL DATASET (Solo Deltas Relativos)
+# ---------------------------------------------------------
+df_tree_delta <- delta_merged_full %>%
+  # A. Eliminar cualquier columna que termine en "_abs" (Delta absolutos)
+  dplyr::select(-matches("_abs$")) %>%
+  
+  # B. Eliminar referencias a bs2/bs3 si las hubiera (limpieza extra)
+  dplyr::select(-matches("_bs2|_bs3")) %>%
+  
+  # C. Eliminar lista negra clínica
+  dplyr::select(-any_of(vars_exclude)) %>%
+  
+  # D. Filtrar Target
+  filter(Prog.6.meses %in% c("No", "Sí")) %>%
+  mutate(Prog.6.meses = factor(Prog.6.meses, levels = c("No", "Sí")))
+
+cat("Dimensiones finales:", dim(df_tree_delta)[1], "pacientes x", dim(df_tree_delta)[2], "variables\n")
+
+# ---------------------------------------------------------
+# ÁRBOL DE DECISIÓN SIMPLE
+# ---------------------------------------------------------
+set.seed(123)
+tree_model <- rpart(Prog.6.meses ~ ., 
+                    data = df_tree_delta, 
+                    method = "class",
+                    control = rpart.control(cp = 0.03, maxdepth = 3, minbucket = 5))
+
+# Visualizar Árbol
+rpart.plot(tree_model, 
+           type = 2, 
+           extra = 104, 
+           under = TRUE, 
+           tweak = 1.2, 
+           box.palette = "BuOr",
+           shadow.col = "gray",
+           main = "Árbol predictivo (Deltas): Progresión a 6 meses")
+
+# Matriz de Confusión (Entrenamiento)
+predicciones <- predict(tree_model, df_tree_delta, type = "class")
+conf_matrix <- confusionMatrix(predicciones, df_tree_delta$Prog.6.meses)
+
+cat("\n--- Matriz de Confusión y Estadísticas (Entrenamiento) ---\n")
+print(conf_matrix)
+
+# ---------------------------------------------------------
+# 4. VALIDACIÓN CRUZADA (Repeated 5-Fold CV)
+# ---------------------------------------------------------
+set.seed(123)
+train_control <- trainControl(
+  method = "repeatedcv", 
+  number = 5,       
+  repeats = 10,     
+  search = "grid"
+)
+
+cat("\n--- Ejecutando Cross-Validation... ---\n")
+cv_model <- train(
+  Prog.6.meses ~ ., 
+  data = df_tree_delta, 
+  method = "rpart", 
+  trControl = train_control,
+  tuneLength = 10,
+  na.action = na.pass 
+)
+
+# Resultados CV
+print(cv_model)
+cat("\n--- Mejor Accuracy Estimada por CV (Realista) ---\n")
+print(max(cv_model$results$Accuracy))
+
+```
+
+
+## Random Forest con datos de BS1
+
+```{r}
+
+# # Preparar Dataset para RF
+df_rf <- merged_full %>%
+  # Eliminar variables de tiempos BS2 y BS3
+  select(-matches("_bs2|_bs3")) %>%
+  
+  # Eliminar variables absolutas (_abs) dejando solo relativas (_rel) y clínicas
+  select(-matches("_abs")) %>%
+  
+  # Eliminar lista negra clínica
+  select(-any_of(vars_exclude)) %>%
+  
+  # Filtrar Target y convertir a factor
+  filter(Prog.6.meses %in% c("No", "Sí")) %>%
+  mutate(Prog.6.meses = factor(Prog.6.meses, levels = c("No", "Sí"))) %>%
+  
+  # Asegurar eliminación de filas vacías residuales si las hubiera
+  drop_na()
+
+# Imprimir dimensiones (ahora fuera del flujo del pipe)
+cat("Dimensiones finales para RF:", nrow(df_rf), "pacientes x", ncol(df_rf), "variables\n")
+
+# Configurar Validación Cruzada (Repeated 5-Fold)
+set.seed(123)
+train_control <- trainControl(
+  method = "repeatedcv", 
+  number = 5,        
+  repeats = 10,      
+  search = "grid"
+)
+
+# Entrenar Random Forest
+cat("Entrenando Random Forest con CV...\n")
+
+model_rf <- train(
+  Prog.6.meses ~ ., 
+  data = df_rf, 
+  method = "rf", 
+  metric = "Accuracy",
+  trControl = train_control,
+  tuneLength = 5,
+  importance = TRUE
+)
+
+# Mostrar Resultados
+print(model_rf)
+
+cat("\n--- Mejor Accuracy Estimada por CV ---\n")
+print(max(model_rf$results$Accuracy))
+
+# Mostrar Variables más importantes (Top 10)
+cat("\n--- Top 10 Variables más Importantes ---\n")
+imp <- varImp(model_rf)
+print(imp)
+plot(imp, top = 10, main = "Importancia de Variables (RF - BS1 Rel)")
+```
+
+
+## Random forest con datos de delta
+
+```{r}
+# Preparar Dataset Delta para RF
+df_rf <- delta_merged_full %>%
+  # Eliminar lista negra clínica
+  select(-any_of(vars_exclude)) %>%
+  
+  # Eliminar absolutos (_abs) si tus deltas se basan en _rel (ajustar según tu nomenclatura)
+  select(-matches("_abs")) %>%
+  
+  # Filtrar Target y convertir a factor
+  filter(Prog.6.meses %in% c("No", "Sí")) %>%
+  mutate(Prog.6.meses = factor(Prog.6.meses, levels = c("No", "Sí"))) %>%
+  
+  # Eliminar NAs: En deltas esto es crítico porque requiere muestras pareadas
+  drop_na()
+
+# Imprimir dimensiones
+cat("Dimensiones finales (Delta):", nrow(df_rf), "pacientes x", ncol(df_rf), "variables\n")
+
+# Configurar CV
+set.seed(123)
+train_control <- trainControl(
+  method = "repeatedcv", 
+  number = 5,        
+  repeats = 10,      
+  search = "grid"
+)
+
+# Entrenar Random Forest
+cat("Entrenando Random Forest (Delta) con CV...\n")
+
+model_rf <- train(
+  Prog.6.meses ~ ., 
+  data = df_rf, 
+  method = "rf", 
+  metric = "Accuracy",
+  trControl = train_control,
+  tuneLength = 5,
+  importance = TRUE
+)
+
+# 5. Resultados
+print(model_rf)
+
+cat("\n--- Mejor Accuracy Estimada por CV ---\n")
+print(max(model_rf$results$Accuracy))
+
+# Importancia de variables
+cat("\n--- Top 10 Variables más Importantes ---\n")
+imp <- varImp(model_rf)
+print(imp)
+plot(imp, top = 10, main = "Importancia de Variables (RF - Deltas)")
+```
+
